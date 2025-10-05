@@ -7,8 +7,10 @@ from ultralytics import YOLO
 # 0 usually refers to the first camera (UVC camera) on your computer
 # If you have multiple cameras, you may need to try 1, 2, ...
 CAMERA_SOURCE = 0 
-# Choose a YOLO model, e.g., 'n' (nano) or 's' (small)
-MODEL_NAME = 'yolo11n.pt' 
+# Choose a YOLO model, e.g., 'n' (nano) or 's' (small); Switch models as needed
+MODEL_NAME = 'yolov8n.pt' 
+# MODEL_NAME = 'yolo11n.pt'
+
 # Set tracker config (optional, for tracking object IDs)
 TRACKER_CONFIG = 'bytetrack.yaml' # Choose a tracker
 
@@ -31,8 +33,9 @@ print(f"Camera connected successfully using model: {MODEL_NAME}. Press 'q' to ex
 CROP_SIZE = 128
 REMOVE_DELAY = 10  # Delay in seconds before removing disappeared objects
 REFRESH_INTERVAL = 1  # Refresh object window every few seconds
+OBJECTS_PER_ROW = 8   # Number of objects per row
 
-# Track each obj_id: {'crop': ..., 'last_seen': ...}
+# Track each obj_id: {'crop': ..., 'last_seen': ..., 'name': ...}
 object_dict = {}
 last_panel_update = time.time()
 
@@ -45,8 +48,6 @@ while True:
         break
 
     # Perform real-time tracking
-    # Use .track() instead of .predict() to enable tracking
-    # persist=True ensures tracker state is maintained between frames
     results = model.track(
         frame, 
         conf=0.6, # Confidence threshold
@@ -61,6 +62,7 @@ while True:
 
     now = time.time()
     boxes = results[0].boxes
+    names = results[0].names if hasattr(results[0], 'names') else {}
     current_ids = set()
     if boxes is not None and hasattr(boxes, 'id'):
         for i, box in enumerate(boxes):
@@ -72,8 +74,11 @@ while True:
                 crop = frame[y1:y2, x1:x2]
                 if crop.size > 0:
                     crop_resized = cv2.resize(crop, (CROP_SIZE, CROP_SIZE))
+                    # Get class name
+                    cls_id = int(box.cls.item()) if hasattr(box, 'cls') and box.cls is not None else -1
+                    obj_name = names[cls_id] if cls_id in names else f"ID{obj_id}"
                     # Update or add object
-                    object_dict[obj_id] = {'crop': crop_resized, 'last_seen': now}
+                    object_dict[obj_id] = {'crop': crop_resized, 'last_seen': now, 'name': obj_name}
                     current_ids.add(obj_id)
 
     # Remove objects that disappeared for more than REMOVE_DELAY seconds
@@ -87,13 +92,31 @@ while True:
     # Refresh object display window every REFRESH_INTERVAL seconds
     if now - last_panel_update > REFRESH_INTERVAL:
         if object_dict:
-            # Concatenate all crop images horizontally
-            crops = [info['crop'] for info in object_dict.values()]
-            objects_panel = np.hstack(crops)
+            crops = []
+            labels = []
+            for obj_id, info in object_dict.items():
+                # Draw label (object name + ID) above the crop
+                label_img = np.zeros((24, CROP_SIZE, 3), dtype=np.uint8)
+                text = f"{info['name']} (ID:{obj_id})"
+                cv2.putText(label_img, text, (5, 18), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,255,255), 1, cv2.LINE_AA)
+                # Stack label and crop vertically
+                crop_with_label = np.vstack([label_img, info['crop']])
+                crops.append(crop_with_label)
+            # Arrange crops in a grid (OBJECTS_PER_ROW per row)
+            rows = []
+            for i in range(0, len(crops), OBJECTS_PER_ROW):
+                row_crops = crops[i:i+OBJECTS_PER_ROW]
+                # Pad row if not enough objects
+                if len(row_crops) < OBJECTS_PER_ROW:
+                    pad = OBJECTS_PER_ROW - len(row_crops)
+                    for _ in range(pad):
+                        row_crops.append(np.zeros_like(crop_with_label))
+                rows.append(np.hstack(row_crops))
+            objects_panel = np.vstack(rows)
             cv2.imshow("Objects", objects_panel)
         else:
             # Show black screen if no new objects
-            cv2.imshow("Objects", np.zeros((CROP_SIZE, CROP_SIZE, 3), dtype=np.uint8))
+            cv2.imshow("Objects", np.zeros((CROP_SIZE+24, CROP_SIZE, 3), dtype=np.uint8))
         last_panel_update = now
 
     # Check if 'q' key is pressed to exit
