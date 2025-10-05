@@ -7,12 +7,12 @@ from ultralytics import YOLO
 # 0 usually refers to the first camera (UVC camera) on your computer
 # If you have multiple cameras, you may need to try 1, 2, ...
 CAMERA_SOURCE = 0 
-# Choose a YOLOv8 model, e.g., 'n' (nano) or 's' (small)
-MODEL_NAME = 'yolov11n.pt' 
+# Choose a YOLO model, e.g., 'n' (nano) or 's' (small)
+MODEL_NAME = 'yolo11n.pt' 
 # Set tracker config (optional, for tracking object IDs)
 TRACKER_CONFIG = 'bytetrack.yaml' # Choose a tracker
 
-# Load YOLOv8 model
+# Load YOLO model
 try:
     model = YOLO(MODEL_NAME)
     print(f"Model loaded successfully: {MODEL_NAME}")
@@ -26,7 +26,7 @@ if not cap.isOpened():
     print(f"Error: Unable to open camera source {CAMERA_SOURCE}")
     exit()
 
-print("Camera connected successfully. Press 'q' to exit real-time detection.")
+print(f"Camera connected successfully using model: {MODEL_NAME}. Press 'q' to exit real-time detection.")
 
 CROP_SIZE = 128
 REMOVE_DELAY = 10  # Delay in seconds before removing disappeared objects
@@ -57,7 +57,7 @@ while True:
     # Get result image with bounding boxes and tracking IDs
     # .plot() automatically draws results on the image
     annotated_frame = results[0].plot()
-    cv2.imshow("YOLOv8 Real-Time Tracking (Press 'q' to exit)", annotated_frame)
+    cv2.imshow(f"YOLO Real-Time Tracking [{MODEL_NAME}] (Press 'q' to exit)", annotated_frame)
 
     now = time.time()
     boxes = results[0].boxes
