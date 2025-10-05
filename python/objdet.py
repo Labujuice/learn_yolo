@@ -14,6 +14,16 @@ MODEL_NAME = 'yolov8n.pt'
 # Set tracker config (optional, for tracking object IDs)
 TRACKER_CONFIG = 'bytetrack.yaml' # Choose a tracker
 
+CROP_SIZE = 128
+APPEAR_THRESHOLD = 1    # Seconds an object must be continuously detected before display
+REMOVE_DELAY = 5        # Seconds after disappearance before removing from display
+REFRESH_INTERVAL = 1  # Refresh object window every few seconds
+OBJECTS_PER_ROW = 8   # Number of objects per row
+
+# Track each obj_id: {'crop': ..., 'last_seen': ..., 'first_seen': ..., 'name': ..., 'visible': ...}
+object_dict = {}
+last_panel_update = time.time()
+
 # Load YOLO model
 try:
     model = YOLO(MODEL_NAME)
@@ -30,15 +40,6 @@ if not cap.isOpened():
 
 print(f"Camera connected successfully using model: {MODEL_NAME}. Press 'q' to exit real-time detection.")
 
-CROP_SIZE = 128
-REMOVE_DELAY = 10  # Delay in seconds before removing disappeared objects
-REFRESH_INTERVAL = 1  # Refresh object window every few seconds
-OBJECTS_PER_ROW = 8   # Number of objects per row
-
-# Track each obj_id: {'crop': ..., 'last_seen': ..., 'name': ...}
-object_dict = {}
-last_panel_update = time.time()
-
 # --- Real-time Processing Loop ---
 while True:
     # Read a frame
@@ -47,23 +48,20 @@ while True:
         print("Unable to read frame, exiting.")
         break
 
+    now = time.time()
     # Perform real-time tracking
     results = model.track(
         frame, 
-        conf=0.6, # Confidence threshold
+        conf=0.5, # Confidence threshold
         persist=True,
         tracker=TRACKER_CONFIG # Enable tracking
     )
 
-    # Get result image with bounding boxes and tracking IDs
-    # .plot() automatically draws results on the image
-    annotated_frame = results[0].plot()
-    cv2.imshow(f"YOLO Real-Time Tracking [{MODEL_NAME}] (Press 'q' to exit)", annotated_frame)
-
-    now = time.time()
     boxes = results[0].boxes
     names = results[0].names if hasattr(results[0], 'names') else {}
     current_ids = set()
+
+    # Update object_dict with current detections
     if boxes is not None and hasattr(boxes, 'id'):
         for i, box in enumerate(boxes):
             # Get tracking ID
@@ -77,36 +75,52 @@ while True:
                     # Get class name
                     cls_id = int(box.cls.item()) if hasattr(box, 'cls') and box.cls is not None else -1
                     obj_name = names[cls_id] if cls_id in names else f"ID{obj_id}"
-                    # Update or add object
-                    object_dict[obj_id] = {'crop': crop_resized, 'last_seen': now, 'name': obj_name}
+                    if obj_id not in object_dict:
+                        object_dict[obj_id] = {
+                            'crop': crop_resized,
+                            'last_seen': now,
+                            'first_seen': now,
+                            'name': obj_name,
+                            'visible': True
+                        }
+                    else:
+                        object_dict[obj_id]['crop'] = crop_resized
+                        object_dict[obj_id]['last_seen'] = now
+                        object_dict[obj_id]['visible'] = True
                     current_ids.add(obj_id)
 
-    # Remove objects that disappeared for more than REMOVE_DELAY seconds
+    # Mark objects not currently visible
+    for obj_id in object_dict:
+        if obj_id not in current_ids:
+            object_dict[obj_id]['visible'] = False
+
+    # Remove objects that have disappeared for more than REMOVE_DELAY seconds
     remove_ids = []
     for obj_id, info in object_dict.items():
-        if now - info['last_seen'] > REMOVE_DELAY:
+        if not info['visible'] and now - info['last_seen'] > REMOVE_DELAY:
             remove_ids.append(obj_id)
     for obj_id in remove_ids:
         del object_dict[obj_id]
 
     # Refresh object display window every REFRESH_INTERVAL seconds
     if now - last_panel_update > REFRESH_INTERVAL:
-        if object_dict:
-            crops = []
-            labels = []
-            for obj_id, info in object_dict.items():
+        display_crops = []
+        for obj_id, info in object_dict.items():
+            # Only show objects that have been visible for at least APPEAR_THRESHOLD seconds
+            if now - info['first_seen'] >= APPEAR_THRESHOLD:
                 # Draw label (object name + ID) above the crop
                 label_img = np.zeros((24, CROP_SIZE, 3), dtype=np.uint8)
                 text = f"{info['name']} (ID:{obj_id})"
                 cv2.putText(label_img, text, (5, 18), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,255,255), 1, cv2.LINE_AA)
-                # Stack label and crop vertically
                 crop_with_label = np.vstack([label_img, info['crop']])
-                crops.append(crop_with_label)
-            # Arrange crops in a grid (OBJECTS_PER_ROW per row)
+                # Draw colored rectangle around the crop
+                color = (0, 255, 0) if info['visible'] else (0, 165, 255)  # Green or Orange
+                cv2.rectangle(crop_with_label, (0, 24), (CROP_SIZE-1, CROP_SIZE+23), color, 2)
+                display_crops.append(crop_with_label)
+        if display_crops:
             rows = []
-            for i in range(0, len(crops), OBJECTS_PER_ROW):
-                row_crops = crops[i:i+OBJECTS_PER_ROW]
-                # Pad row if not enough objects
+            for i in range(0, len(display_crops), OBJECTS_PER_ROW):
+                row_crops = display_crops[i:i+OBJECTS_PER_ROW]
                 if len(row_crops) < OBJECTS_PER_ROW:
                     pad = OBJECTS_PER_ROW - len(row_crops)
                     for _ in range(pad):
@@ -115,9 +129,12 @@ while True:
             objects_panel = np.vstack(rows)
             cv2.imshow("Objects", objects_panel)
         else:
-            # Show black screen if no new objects
             cv2.imshow("Objects", np.zeros((CROP_SIZE+24, CROP_SIZE, 3), dtype=np.uint8))
         last_panel_update = now
+
+    # Show annotated frame as usual
+    annotated_frame = results[0].plot()
+    cv2.imshow(f"YOLO Real-Time Tracking [{MODEL_NAME}] (Press 'q' to exit)", annotated_frame)
 
     # Check if 'q' key is pressed to exit
     if cv2.waitKey(1) & 0xFF == ord('q'):
