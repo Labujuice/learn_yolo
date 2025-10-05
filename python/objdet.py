@@ -40,6 +40,28 @@ if not cap.isOpened():
 
 print(f"Camera connected successfully using model: {MODEL_NAME}. Press 'q' to exit real-time detection.")
 
+# Add these lines before the main loop to manage fixed slots for object display
+MAX_OBJECTS = OBJECTS_PER_ROW * 8  # You can adjust the max number of slots as needed
+object_slots = [None] * MAX_OBJECTS  # Each slot holds an obj_id or None
+
+def assign_slot(obj_id):
+    # If already assigned, return its slot
+    for idx, oid in enumerate(object_slots):
+        if oid == obj_id:
+            return idx
+    # Find first empty slot
+    for idx, oid in enumerate(object_slots):
+        if oid is None:
+            object_slots[idx] = obj_id
+            return idx
+    # If no empty slot, do not assign (or you can implement replacement policy)
+    return None
+
+def remove_slot(obj_id):
+    for idx, oid in enumerate(object_slots):
+        if oid == obj_id:
+            object_slots[idx] = None
+
 # --- Real-time Processing Loop ---
 while True:
     # Read a frame
@@ -101,35 +123,33 @@ while True:
             remove_ids.append(obj_id)
     for obj_id in remove_ids:
         del object_dict[obj_id]
+        remove_slot(obj_id)  # Free the slot
 
     # Refresh object display window every REFRESH_INTERVAL seconds
     if now - last_panel_update > REFRESH_INTERVAL:
-        display_crops = []
+        # Prepare crops for slots
+        slot_crops = [np.zeros((CROP_SIZE+24, CROP_SIZE, 3), dtype=np.uint8) for _ in range(MAX_OBJECTS)]
         for obj_id, info in object_dict.items():
             # Only show objects that have been visible for at least APPEAR_THRESHOLD seconds
             if now - info['first_seen'] >= APPEAR_THRESHOLD:
-                # Draw label (object name + ID) above the crop
-                label_img = np.zeros((24, CROP_SIZE, 3), dtype=np.uint8)
-                text = f"{info['name']} (ID:{obj_id})"
-                cv2.putText(label_img, text, (5, 18), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,255,255), 1, cv2.LINE_AA)
-                crop_with_label = np.vstack([label_img, info['crop']])
-                # Draw colored rectangle around the crop
-                color = (0, 255, 0) if info['visible'] else (0, 165, 255)  # Green or Orange
-                cv2.rectangle(crop_with_label, (0, 24), (CROP_SIZE-1, CROP_SIZE+23), color, 2)
-                display_crops.append(crop_with_label)
-        if display_crops:
-            rows = []
-            for i in range(0, len(display_crops), OBJECTS_PER_ROW):
-                row_crops = display_crops[i:i+OBJECTS_PER_ROW]
-                if len(row_crops) < OBJECTS_PER_ROW:
-                    pad = OBJECTS_PER_ROW - len(row_crops)
-                    for _ in range(pad):
-                        row_crops.append(np.zeros_like(crop_with_label))
-                rows.append(np.hstack(row_crops))
-            objects_panel = np.vstack(rows)
-            cv2.imshow("Objects", objects_panel)
-        else:
-            cv2.imshow("Objects", np.zeros((CROP_SIZE+24, CROP_SIZE, 3), dtype=np.uint8))
+                slot_idx = assign_slot(obj_id)
+                if slot_idx is not None:
+                    # Draw label (object name + ID) above the crop
+                    label_img = np.zeros((24, CROP_SIZE, 3), dtype=np.uint8)
+                    text = f"{info['name']} (ID:{obj_id})"
+                    cv2.putText(label_img, text, (5, 18), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,255,255), 1, cv2.LINE_AA)
+                    crop_with_label = np.vstack([label_img, info['crop']])
+                    # Draw colored rectangle around the crop
+                    color = (0, 255, 0) if info['visible'] else (0, 165, 255)  # Green or Orange
+                    cv2.rectangle(crop_with_label, (0, 24), (CROP_SIZE-1, CROP_SIZE+23), color, 2)
+                    slot_crops[slot_idx] = crop_with_label
+        # Arrange crops in grid
+        rows = []
+        for i in range(0, MAX_OBJECTS, OBJECTS_PER_ROW):
+            row_crops = slot_crops[i:i+OBJECTS_PER_ROW]
+            rows.append(np.hstack(row_crops))
+        objects_panel = np.vstack(rows)
+        cv2.imshow("Objects", objects_panel)
         last_panel_update = now
 
     # Show annotated frame as usual
