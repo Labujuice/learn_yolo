@@ -1,0 +1,106 @@
+import cv2
+import time
+import numpy as np
+from ultralytics import YOLO
+
+# --- Configuration Parameters ---
+# 0 usually refers to the first camera (UVC camera) on your computer
+# If you have multiple cameras, you may need to try 1, 2, ...
+CAMERA_SOURCE = 0 
+# Choose a YOLOv8 model, e.g., 'n' (nano) or 's' (small)
+MODEL_NAME = 'yolov8n.pt' 
+# Set tracker config (optional, for tracking object IDs)
+TRACKER_CONFIG = 'bytetrack.yaml' # Choose a tracker
+
+# Load YOLOv8 model
+try:
+    model = YOLO(MODEL_NAME)
+    print(f"Model loaded successfully: {MODEL_NAME}")
+except Exception as e:
+    print(f"Failed to load model: {e}")
+    exit()
+
+# Start UVC camera (VideoCapture)
+cap = cv2.VideoCapture(CAMERA_SOURCE)
+if not cap.isOpened():
+    print(f"Error: Unable to open camera source {CAMERA_SOURCE}")
+    exit()
+
+print("Camera connected successfully. Press 'q' to exit real-time detection.")
+
+CROP_SIZE = 128
+REMOVE_DELAY = 10  # Delay in seconds before removing disappeared objects
+REFRESH_INTERVAL = 1  # Refresh object window every few seconds
+
+# Track each obj_id: {'crop': ..., 'last_seen': ...}
+object_dict = {}
+last_panel_update = time.time()
+
+# --- Real-time Processing Loop ---
+while True:
+    # Read a frame
+    ret, frame = cap.read()
+    if not ret:
+        print("Unable to read frame, exiting.")
+        break
+
+    # Perform real-time tracking
+    # Use .track() instead of .predict() to enable tracking
+    # persist=True ensures tracker state is maintained between frames
+    results = model.track(
+        frame, 
+        conf=0.6, # Confidence threshold
+        persist=True,
+        tracker=TRACKER_CONFIG # Enable tracking
+    )
+
+    # Get result image with bounding boxes and tracking IDs
+    # .plot() automatically draws results on the image
+    annotated_frame = results[0].plot()
+    cv2.imshow("YOLOv8 Real-Time Tracking (Press 'q' to exit)", annotated_frame)
+
+    now = time.time()
+    boxes = results[0].boxes
+    current_ids = set()
+    if boxes is not None and hasattr(boxes, 'id'):
+        for i, box in enumerate(boxes):
+            # Get tracking ID
+            obj_id = int(box.id.item()) if box.id is not None else None
+            if obj_id is not None:
+                # Get object bounding box coordinates
+                x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
+                crop = frame[y1:y2, x1:x2]
+                if crop.size > 0:
+                    crop_resized = cv2.resize(crop, (CROP_SIZE, CROP_SIZE))
+                    # Update or add object
+                    object_dict[obj_id] = {'crop': crop_resized, 'last_seen': now}
+                    current_ids.add(obj_id)
+
+    # Remove objects that disappeared for more than REMOVE_DELAY seconds
+    remove_ids = []
+    for obj_id, info in object_dict.items():
+        if now - info['last_seen'] > REMOVE_DELAY:
+            remove_ids.append(obj_id)
+    for obj_id in remove_ids:
+        del object_dict[obj_id]
+
+    # Refresh object display window every REFRESH_INTERVAL seconds
+    if now - last_panel_update > REFRESH_INTERVAL:
+        if object_dict:
+            # Concatenate all crop images horizontally
+            crops = [info['crop'] for info in object_dict.values()]
+            objects_panel = np.hstack(crops)
+            cv2.imshow("Objects", objects_panel)
+        else:
+            # Show black screen if no new objects
+            cv2.imshow("Objects", np.zeros((CROP_SIZE, CROP_SIZE, 3), dtype=np.uint8))
+        last_panel_update = now
+
+    # Check if 'q' key is pressed to exit
+    if cv2.waitKey(1) & 0xFF == ord('q'):
+        break
+
+# --- Cleanup Resources ---
+cap.release()
+cv2.destroyAllWindows()
+print("Experiment finished.")
