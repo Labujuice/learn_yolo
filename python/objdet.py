@@ -8,7 +8,7 @@ from ultralytics import YOLO
 # If you have multiple cameras, you may need to try 1, 2, ...
 CAMERA_SOURCE = 0 
 # Choose a YOLOv8 model, e.g., 'n' (nano) or 's' (small)
-MODEL_NAME = 'yolov8n.pt' 
+MODEL_NAME = 'yolov11n.pt' 
 # Set tracker config (optional, for tracking object IDs)
 TRACKER_CONFIG = 'bytetrack.yaml' # Choose a tracker
 
