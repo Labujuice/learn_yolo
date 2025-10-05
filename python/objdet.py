@@ -10,14 +10,15 @@ CAMERA_SOURCE = 0
 # Choose a YOLO model, e.g., 'n' (nano) or 's' (small); Switch models as needed
 MODEL_NAME = 'yolov8n.pt' 
 # MODEL_NAME = 'yolo11n.pt'
+# MODEL_NAME = 'yolo12n.pt'
 
 # Set tracker config (optional, for tracking object IDs)
 TRACKER_CONFIG = 'bytetrack.yaml' # Choose a tracker
 
 CROP_SIZE = 128
 APPEAR_THRESHOLD = 1    # Seconds an object must be continuously detected before display
-REMOVE_DELAY = 5        # Seconds after disappearance before removing from display
-REFRESH_INTERVAL = 1  # Refresh object window every few seconds
+REMOVE_DELAY = 3        # Seconds after disappearance before removing from display
+REFRESH_INTERVAL = 0.2  # Refresh object window every few seconds
 OBJECTS_PER_ROW = 8   # Number of objects per row
 
 # Track each obj_id: {'crop': ..., 'last_seen': ..., 'first_seen': ..., 'name': ..., 'visible': ...}
