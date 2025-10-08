@@ -12,7 +12,9 @@ def main():
     model = YOLO(args.input)
     
     print("Exporting model to ONNX format...")
-    model.export(format='onnx', dynamic=False, simplify=True)
+    # Add opset=12 for better compatibility with older OpenCV versions (like 4.5.4)
+    # This can help resolve errors related to Reshape operations in the model's head.
+    model.export(format='onnx', dynamic=False, simplify=True, opset=12)
     print(f"Export complete. The ONNX model is saved as {args.input.replace('.pt', '.onnx')}")
 
 if __name__ == "__main__":
