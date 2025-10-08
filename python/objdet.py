@@ -1,5 +1,6 @@
 import cv2
 import time
+import argparse
 import numpy as np
 from ultralytics import YOLO
 
@@ -14,6 +15,30 @@ MODEL_NAME = 'yolov8n.pt'
 
 # Set tracker config (optional, for tracking object IDs)
 TRACKER_CONFIG = 'bytetrack.yaml' # Choose a tracker
+
+# --- Argument Parsing for Class Filtering ---
+parser = argparse.ArgumentParser(description="YOLO Object Detection and Tracking")
+parser.add_argument(
+    '--classes', 
+    nargs='*', 
+    type=int, 
+    help="List of class IDs to detect. If not specified, all classes are detected. e.g., --classes 0 2"
+)
+parser.add_argument(
+    '--conf', 
+    type=float, 
+    default=0.4, 
+    help="Confidence threshold for detection (e.g., 0.25)."
+)
+parser.add_argument(
+    '--imgsz', 
+    type=int, 
+    default=640, 
+    help="Image size for inference (e.g., 640, 1280)."
+)
+args = parser.parse_args()
+
+TARGET_CLASSES = args.classes if args.classes is not None else []
 
 CROP_SIZE = 128
 APPEAR_THRESHOLD = 1    # Seconds an object must be continuously detected before display
@@ -74,10 +99,13 @@ while True:
     now = time.time()
     # Perform real-time tracking
     results = model.track(
-        frame, 
-        conf=0.5, # Confidence threshold
+        frame,
+        # --- Parameters for Small Object Detection ---
+        conf=args.conf,
+        imgsz=args.imgsz,
         persist=True,
-        tracker=TRACKER_CONFIG # Enable tracking
+        tracker=TRACKER_CONFIG,
+        classes=TARGET_CLASSES if TARGET_CLASSES else None # Filter by class
     )
 
     boxes = results[0].boxes
