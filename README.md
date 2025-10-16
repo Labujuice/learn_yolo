@@ -44,21 +44,49 @@ The Python version uses the powerful `ultralytics` library to handle both detect
     Place your YOLO model (e.g., `yolov8n.pt`) in the `python/` directory.
 
 2.  **Run the script**
-    ```bash
-    cd python
-    python objdet.py
-    ```
+    Navigate to the `python` directory and run the script.
 
-3.  **Switch models**  
-    Edit `MODEL_NAME` in `objdet.py` to use a different `.pt` model file.
+    *   **Basic execution (uses default camera 0):**
+        ```bash
+        cd python
+        python objdet.py
+        ```
 
-4.  **Controls**
+    *   **Interactive camera selection:**
+        Use the `--source` flag to choose a camera and its resolution/FPS.
+        ```bash
+        python objdet.py --source
+        ```
+
+    *   **Filter specific classes:**
+        Use `--classes` to detect only certain objects (e.g., person, car, bus). The class IDs are based on the COCO dataset.
+        ```bash
+        # Detect person (0), car (2), and bus (5)
+        python objdet.py --classes 0 2 5
+        ```
+
+    *   **Adjust confidence threshold:**
+        Use `--conf` to set a custom confidence level.
+        ```bash
+        python objdet.py --conf 0.5
+        ```
+
+3.  **Controls**
     - Press `q` in the preview window to exit.
 
-### Configuration (`objdet.py`)
+### Configuration
 
-- `CAMERA_SOURCE`: Camera index (default: 0).
-- `MODEL_NAME`: Model file name (e.g., `'yolov8n.pt'`).
+#### Runtime Arguments
+
+You can configure the script at runtime using the following command-line arguments:
+- `--source`: Show an interactive menu to select camera and resolution.
+- `--classes [ID ...]`: Filter detection by class IDs (e.g., `0` for person).
+- `--conf [0.0-1.0]`: Set the confidence threshold for detections (default: `0.4`).
+- `--imgsz [SIZE]`: Set the image size for inference (default: `640`).
+
+#### In-Script Parameters (`objdet.py`)
+
+- `MODEL_NAME`: Default model file name (e.g., `'yolov8n.pt'`).
 - `TRACKER_CONFIG`: Tracker configuration file (e.g., `'bytetrack.yaml'`).
 - `APPEAR_THRESHOLD`: Seconds an object must be detected before display (default: 1).
 - `REMOVE_DELAY`: Seconds after disappearance before removing from display (default: 3).
