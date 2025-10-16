@@ -33,11 +33,16 @@ parser.add_argument(
     default=640, 
     help="Image size for inference (e.g., 640, 1280)."
 )
+parser.add_argument(
+    '--source',
+    action='store_true',
+    help="Show an interactive menu to select camera source and resolution."
+)
 args = parser.parse_args()
 
 TARGET_CLASSES = args.classes if args.classes is not None else []
 
-CROP_SIZE = 64
+CROP_SIZE = 48
 APPEAR_THRESHOLD = 1    # Seconds an object must be continuously detected before display
 REMOVE_DELAY = 3        # Seconds after disappearance before removing from display
 REFRESH_INTERVAL = 0.2  # Refresh object window every few seconds
@@ -127,9 +132,15 @@ except Exception as e:
     exit()
 
 # --- Camera Setup ---
-CAMERA_SOURCE, FRAME_WIDTH, FRAME_HEIGHT, FPS = select_camera_and_mode()
-if CAMERA_SOURCE is None:
-    exit()
+if args.source:
+    CAMERA_SOURCE, FRAME_WIDTH, FRAME_HEIGHT, FPS = select_camera_and_mode()
+    if CAMERA_SOURCE is None:
+        exit()
+else:
+    # Use default camera source without interactive selection
+    CAMERA_SOURCE = 0  # Default camera
+    FRAME_WIDTH, FRAME_HEIGHT, FPS = None, None, None
+    print("Using default camera source 0. Use --source for interactive selection.")
 
 # Start UVC camera (VideoCapture)
 cap = cv2.VideoCapture(CAMERA_SOURCE)
@@ -141,7 +152,11 @@ if FRAME_WIDTH and FRAME_HEIGHT and FPS:
 if not cap.isOpened():
     print(f"Error: Unable to open camera source {CAMERA_SOURCE}")
     exit()
-print(f"Camera connected successfully using model: {MODEL_NAME}. Press 'q' to exit real-time detection.")
+
+actual_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+actual_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
+print(f"Camera {CAMERA_SOURCE} connected successfully ({actual_w}x{actual_h}). Using model: {MODEL_NAME}. Press 'q' to exit.")
 
 # Add these lines before the main loop to manage fixed slots for object display
 MAX_OBJECTS = OBJECTS_PER_ROW * 8  # You can adjust the max number of slots as needed
