@@ -5,9 +5,6 @@ import numpy as np
 from ultralytics import YOLO
 
 # --- Configuration Parameters ---
-# 0 usually refers to the first camera (UVC camera) on your computer
-# If you have multiple cameras, you may need to try 1, 2, ...
-CAMERA_SOURCE = 0 
 # Choose a YOLO model, e.g., 'n' (nano) or 's' (small); Switch models as needed
 MODEL_NAME = 'yolov8n.pt' 
 # MODEL_NAME = 'yolo11n.pt'
@@ -36,11 +33,16 @@ parser.add_argument(
     default=640, 
     help="Image size for inference (e.g., 640, 1280)."
 )
+parser.add_argument(
+    '--source',
+    action='store_true',
+    help="Show an interactive menu to select camera source and resolution."
+)
 args = parser.parse_args()
 
 TARGET_CLASSES = args.classes if args.classes is not None else []
 
-CROP_SIZE = 128
+CROP_SIZE = 48
 APPEAR_THRESHOLD = 1    # Seconds an object must be continuously detected before display
 REMOVE_DELAY = 3        # Seconds after disappearance before removing from display
 REFRESH_INTERVAL = 0.2  # Refresh object window every few seconds
@@ -50,6 +52,77 @@ OBJECTS_PER_ROW = 8   # Number of objects per row
 object_dict = {}
 last_panel_update = time.time()
 
+def select_camera_and_mode():
+    """
+    Scans for available cameras, lets the user select one, and then select a supported
+    resolution and frame rate.
+    Returns the selected camera index, width, and height.
+    """
+    # 1. Scan for available cameras
+    available_cameras = []
+    print("Scanning for available cameras...")
+    for i in range(10):  # Check up to 10 camera indices
+        cap = cv2.VideoCapture(i)
+        if cap.isOpened():
+            available_cameras.append(i)
+            cap.release()
+    
+    if not available_cameras:
+        print("Error: No cameras found.")
+        return None, None, None
+
+    # 2. Let user select a camera
+    print("\nPlease select a camera:")
+    for idx in available_cameras:
+        print(f"  [{idx}] Camera {idx}")
+    
+    camera_idx = -1
+    while camera_idx not in available_cameras:
+        try:
+            camera_idx = int(input(f"Enter camera index {available_cameras}: "))
+        except ValueError:
+            print("Invalid input. Please enter a number.")
+
+    # 3. List supported resolutions and FPS for the selected camera
+    print(f"\nChecking supported modes for Camera {camera_idx}...")
+    cap = cv2.VideoCapture(camera_idx)
+    supported_modes = set()
+    common_resolutions = [(1920, 1080), (1280, 720), (640, 480), (320, 240)]
+    common_fps = [60, 30, 24, 15]
+
+    for w, h in common_resolutions:
+        for fps in common_fps:
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, w)
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, h)
+            cap.set(cv2.CAP_PROP_FPS, fps)
+            actual_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            actual_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            actual_fps = int(cap.get(cv2.CAP_PROP_FPS))
+            if actual_w == w and actual_h == h and actual_fps > 0:
+                 supported_modes.add((actual_w, actual_h, actual_fps))
+
+    cap.release()
+
+    if not supported_modes:
+        print("Warning: Could not determine supported modes. Using default settings.")
+        return camera_idx, None, None
+
+    # 4. Let user select a mode
+    modes = sorted(list(supported_modes), key=lambda x: (x[0], x[2]), reverse=True)
+    print("\nPlease select a resolution and FPS:")
+    for i, (w, h, fps) in enumerate(modes):
+        print(f"  [{i}] {w}x{h} @ {fps} FPS")
+    
+    mode_idx = -1
+    while not (0 <= mode_idx < len(modes)):
+        try:
+            mode_idx = int(input(f"Enter mode index [0-{len(modes)-1}]: "))
+        except ValueError:
+            print("Invalid input. Please enter a number.")
+            
+    selected_mode = modes[mode_idx]
+    return camera_idx, selected_mode[0], selected_mode[1], selected_mode[2]
+
 # Load YOLO model
 try:
     model = YOLO(MODEL_NAME)
@@ -58,13 +131,32 @@ except Exception as e:
     print(f"Failed to load model: {e}")
     exit()
 
+# --- Camera Setup ---
+if args.source:
+    CAMERA_SOURCE, FRAME_WIDTH, FRAME_HEIGHT, FPS = select_camera_and_mode()
+    if CAMERA_SOURCE is None:
+        exit()
+else:
+    # Use default camera source without interactive selection
+    CAMERA_SOURCE = 0  # Default camera
+    FRAME_WIDTH, FRAME_HEIGHT, FPS = None, None, None
+    print("Using default camera source 0. Use --source for interactive selection.")
+
 # Start UVC camera (VideoCapture)
 cap = cv2.VideoCapture(CAMERA_SOURCE)
+if FRAME_WIDTH and FRAME_HEIGHT and FPS:
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, FRAME_WIDTH)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_HEIGHT)
+    cap.set(cv2.CAP_PROP_FPS, FPS)
+
 if not cap.isOpened():
     print(f"Error: Unable to open camera source {CAMERA_SOURCE}")
     exit()
 
-print(f"Camera connected successfully using model: {MODEL_NAME}. Press 'q' to exit real-time detection.")
+actual_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+actual_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
+print(f"Camera {CAMERA_SOURCE} connected successfully ({actual_w}x{actual_h}). Using model: {MODEL_NAME}. Press 'q' to exit.")
 
 # Add these lines before the main loop to manage fixed slots for object display
 MAX_OBJECTS = OBJECTS_PER_ROW * 8  # You can adjust the max number of slots as needed
