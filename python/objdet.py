@@ -52,6 +52,10 @@ OBJECTS_PER_ROW = 8   # Number of objects per row
 object_dict = {}
 last_panel_update = time.time()
 
+# --- Global variables for selection ---
+selected_obj_id = None
+last_known_boxes = [] # To store the latest bounding boxes for click detection
+
 def select_camera_and_mode():
     """
     Scans for available cameras, lets the user select one, and then select a supported
@@ -156,6 +160,59 @@ if not cap.isOpened():
 actual_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
 actual_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
+# --- Mouse Callback for Object Selection ---
+def select_object_callback(event, x, y, flags, param):
+    global selected_obj_id
+    window_name = param
+
+    if event == cv2.EVENT_LBUTTONDOWN:
+        found_id = None
+        if window_name == "Objects":
+            # Click is in the Objects panel
+            col = x // CROP_SIZE
+            row = y // (CROP_SIZE + 24)
+            slot_idx = row * OBJECTS_PER_ROW + col
+            if 0 <= slot_idx < len(object_slots):
+                found_id = object_slots[slot_idx]
+        else:
+            # Click is in the main preview window
+            for box in last_known_boxes:
+                x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
+                if x1 <= x <= x2 and y1 <= y <= y2:
+                    found_id = int(box.id.item())
+                    break # Found the topmost object
+        
+        if found_id is not None:
+            if selected_obj_id == found_id:
+                selected_obj_id = None # Deselect if clicking the same object
+            else:
+                selected_obj_id = found_id
+            print(f"Selected Object ID: {selected_obj_id}")
+
+def draw_dashed_rectangle(img, pt1, pt2, color, thickness=1, dash_length=10):
+    """Draws a dashed rectangle on an image."""
+    x1, y1 = pt1
+    x2, y2 = pt2
+
+    # Top and bottom edges
+    for i in range(x1, x2, dash_length * 2):
+        cv2.line(img, (i, y1), (min(i + dash_length, x2), y1), color, thickness)
+        cv2.line(img, (i, y2), (min(i + dash_length, x2), y2), color, thickness)
+
+    # Left and right edges
+    for i in range(y1, y2, dash_length * 2):
+        cv2.line(img, (x1, i), (x1, min(i + dash_length, y2)), color, thickness)
+        cv2.line(img, (x2, i), (x2, min(i + dash_length, y2)), color, thickness)
+
+# Create windows and set mouse callbacks
+main_window_name = f"YOLO Real-Time Tracking [{MODEL_NAME}] (Press 'q' to exit)"
+objects_window_name = "Objects"
+cv2.namedWindow(main_window_name)
+cv2.namedWindow(objects_window_name)
+cv2.setMouseCallback(main_window_name, select_object_callback, param=main_window_name)
+cv2.setMouseCallback(objects_window_name, select_object_callback, param=objects_window_name)
+
+
 print(f"Camera {CAMERA_SOURCE} connected successfully ({actual_w}x{actual_h}). Using model: {MODEL_NAME}. Press 'q' to exit.")
 
 # Add these lines before the main loop to manage fixed slots for object display
@@ -203,6 +260,7 @@ while True:
     boxes = results[0].boxes
     names = results[0].names if hasattr(results[0], 'names') else {}
     current_ids = set()
+    last_known_boxes = boxes if boxes is not None and hasattr(boxes, 'id') else []
 
     # Update object_dict with current detections
     if boxes is not None and hasattr(boxes, 'id'):
@@ -245,6 +303,11 @@ while True:
     for obj_id in remove_ids:
         del object_dict[obj_id]
         remove_slot(obj_id)  # Free the slot
+    
+    # If selected object disappears, deselect it
+    if selected_obj_id is not None and selected_obj_id not in object_dict:
+        print(f"Selected object {selected_obj_id} has disappeared.")
+        selected_obj_id = None
 
     # Refresh object display window every REFRESH_INTERVAL seconds
     if now - last_panel_update > REFRESH_INTERVAL:
@@ -263,19 +326,33 @@ while True:
                     # Draw colored rectangle around the crop
                     color = (0, 255, 0) if info['visible'] else (0, 165, 255)  # Green or Orange
                     cv2.rectangle(crop_with_label, (0, 24), (CROP_SIZE-1, CROP_SIZE+23), color, 2)
+
+                    # Draw selection highlight
+                    if obj_id == selected_obj_id:
+                        draw_dashed_rectangle(crop_with_label, (0, 24), (CROP_SIZE-1, CROP_SIZE+23), (0, 255, 255), 2, 5)
+
                     slot_crops[slot_idx] = crop_with_label
         # Arrange crops in grid
         rows = []
         for i in range(0, MAX_OBJECTS, OBJECTS_PER_ROW):
             row_crops = slot_crops[i:i+OBJECTS_PER_ROW]
             rows.append(np.hstack(row_crops))
-        objects_panel = np.vstack(rows)
-        cv2.imshow("Objects", objects_panel)
+        if rows:
+            objects_panel = np.vstack(rows)
+            cv2.imshow(objects_window_name, objects_panel)
         last_panel_update = now
 
     # Show annotated frame as usual
     annotated_frame = results[0].plot()
-    cv2.imshow(f"YOLO Real-Time Tracking [{MODEL_NAME}] (Press 'q' to exit)", annotated_frame)
+    # Draw selection highlight on the main frame
+    if selected_obj_id is not None:
+        for box in last_known_boxes:
+            if box.id is not None and int(box.id.item()) == selected_obj_id:
+                x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
+                draw_dashed_rectangle(annotated_frame, (x1, y1), (x2, y2), (0, 255, 255), 2)
+                break
+
+    cv2.imshow(main_window_name, annotated_frame)
 
     # Check if 'q' key is pressed to exit
     if cv2.waitKey(1) & 0xFF == ord('q'):
