@@ -6,9 +6,9 @@ from ultralytics import YOLO
 
 # --- Configuration Parameters ---
 # Choose a YOLO model, e.g., 'n' (nano) or 's' (small); Switch models as needed
-MODEL_NAME = 'yolov8n.pt' 
+# MODEL_NAME = 'yolov8n.pt' 
 # MODEL_NAME = 'yolo11n.pt'
-# MODEL_NAME = 'yolo12n.pt'
+MODEL_NAME = 'yolov8n.pt'
 
 # Set tracker config (optional, for tracking object IDs)
 TRACKER_CONFIG = 'bytetrack.yaml' # Choose a tracker
@@ -55,6 +55,12 @@ last_panel_update = time.time()
 # --- Global variables for selection ---
 selected_obj_id = None
 last_known_boxes = [] # To store the latest bounding boxes for click detection
+cv_tracker = None
+is_cv_tracking = False
+CV_TRACKER_TYPE = 'CSRT' # CSRT (accurate), KCF (fast), MOSSE (fastest)
+
+tracking_request = None # To handle requests from the mouse callback
+
 
 def select_camera_and_mode():
     """
@@ -130,6 +136,7 @@ def select_camera_and_mode():
 # Load YOLO model
 try:
     model = YOLO(MODEL_NAME)
+    # model = YOLO(MODEL_NAME).to('cuda') 
     print(f"Model loaded successfully: {MODEL_NAME}")
 except Exception as e:
     print(f"Failed to load model: {e}")
@@ -160,14 +167,35 @@ if not cap.isOpened():
 actual_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
 actual_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
+# --- OpenCV Tracker Management ---
+def create_cv_tracker():
+    """Creates an OpenCV tracker based on the specified type, with error handling."""
+    tracker_builders = {
+        'CSRT': cv2.TrackerCSRT_create,
+        'KCF': cv2.TrackerKCF_create,
+        'MIL': cv2.TrackerMIL_create
+    }
+    try:
+        builder = tracker_builders.get(CV_TRACKER_TYPE)
+        if builder:
+            return builder()
+        else:
+            print(f"Error: Invalid tracker type '{CV_TRACKER_TYPE}'. Valid options are: {list(tracker_builders.keys())}")
+            return None
+    except AttributeError:
+        print("\nError: Your OpenCV version is missing tracker modules (AttributeError).")
+        print("This usually means the 'contrib' version is not installed.")
+        print("Please run: pip install opencv-contrib-python\n")
+        return None
+
 # --- Mouse Callback for Object Selection ---
 def select_object_callback(event, x, y, flags, param):
-    global selected_obj_id
-    window_name = param
+    global selected_obj_id, tracking_request
+    window_name = param['name']
 
     if event == cv2.EVENT_LBUTTONDOWN:
         found_id = None
-        if window_name == "Objects":
+        if window_name == objects_window_name:
             # Click is in the Objects panel
             col = x // CROP_SIZE
             row = y // (CROP_SIZE + 24)
@@ -185,9 +213,12 @@ def select_object_callback(event, x, y, flags, param):
         if found_id is not None:
             if selected_obj_id == found_id:
                 selected_obj_id = None # Deselect if clicking the same object
+                tracking_request = {'action': 'stop'}
             else:
                 selected_obj_id = found_id
-            print(f"Selected Object ID: {selected_obj_id}")
+                tracking_request = {'action': 'start', 'id': found_id, 'frame': param['frame_copy']}
+        elif is_cv_tracking:
+            tracking_request = {'action': 'stop'}
 
 def draw_dashed_rectangle(img, pt1, pt2, color, thickness=1, dash_length=10):
     """Draws a dashed rectangle on an image."""
@@ -209,8 +240,8 @@ main_window_name = f"YOLO Real-Time Tracking [{MODEL_NAME}] (Press 'q' to exit)"
 objects_window_name = "Objects"
 cv2.namedWindow(main_window_name)
 cv2.namedWindow(objects_window_name)
-cv2.setMouseCallback(main_window_name, select_object_callback, param=main_window_name)
-cv2.setMouseCallback(objects_window_name, select_object_callback, param=objects_window_name)
+cv2.setMouseCallback(main_window_name, select_object_callback, param={'name': main_window_name})
+cv2.setMouseCallback(objects_window_name, select_object_callback, param={'name': objects_window_name})
 
 
 print(f"Camera {CAMERA_SOURCE} connected successfully ({actual_w}x{actual_h}). Using model: {MODEL_NAME}. Press 'q' to exit.")
@@ -237,6 +268,75 @@ def remove_slot(obj_id):
         if oid == obj_id:
             object_slots[idx] = None
 
+# --- Tracking Control Functions (used in main loop) ---
+def start_cv_tracking(frame, obj_id):
+    global cv_tracker, is_cv_tracking, selected_obj_id
+    box_to_track = None
+    for box in last_known_boxes:
+        if box.id is not None and int(box.id.item()) == obj_id:
+            box_to_track = box
+            break
+    
+    if box_to_track:
+        coords = box_to_track.xyxy[0].tolist()
+        x1, y1, x2, y2 = map(int, coords) # Convert to integers
+
+        # --- Sanity check for the bounding box ---
+        # Ensure the bounding box is within the frame boundaries
+        h, w, _ = frame.shape
+        x1 = max(0, x1)
+        y1 = max(0, y1)
+        x2 = min(w, x2)
+        y2 = min(h, y2)
+
+        width = x2 - x1
+        height = y2 - y1
+
+        if width <= 0 or height <= 0:
+            print(f"Error: Invalid bounding box for tracker init (width={width}, height={height}). Aborting track.")
+            return
+
+        # --- NEW: Handle overly large bounding boxes ---
+        # If the bbox area is more than 70% of the frame area, it's too large.
+        # Shrink it to 60% of its size, centered, to give the tracker context.
+        frame_area = w * h
+        bbox_area = width * height
+        if bbox_area / frame_area > 0.7:
+            print(f"Info: Bounding box is very large ({int(bbox_area/frame_area*100)}% of frame). Shrinking for tracker stability.")
+            scale_factor = 0.6
+            new_width = int(width * scale_factor)
+            new_height = int(height * scale_factor)
+            x1 = x1 + (width - new_width) // 2
+            y1 = y1 + (height - new_height) // 2
+            width, height = new_width, new_height
+
+        bbox_cv = (x1, y1, width, height)
+        
+        cv_tracker = create_cv_tracker()
+        if not cv_tracker:
+            print("Error: Failed to create OpenCV tracker object.")
+            return
+
+        is_initialized = cv_tracker.init(frame, bbox_cv)
+        if is_initialized:
+             is_cv_tracking = True
+             selected_obj_id = obj_id
+             print(f"Started OpenCV tracking for Object ID: {selected_obj_id}")
+        else:
+            h, w, _ = frame.shape
+            print(f"Failed to initialize OpenCV tracker for ID: {obj_id}.")
+            print(f"  - Bounding Box: {bbox_cv} (x, y, w, h)")
+            print(f"  - Frame Shape: ({w}, {h}) (w, h)")
+            print("  - Possible reasons: Object features are not clear, object is heavily occluded, or it's at the very edge of the frame.")
+            is_cv_tracking = False
+
+def stop_cv_tracking():
+    global cv_tracker, is_cv_tracking, selected_obj_id
+    is_cv_tracking = False
+    cv_tracker = None
+    selected_obj_id = None
+    print("Stopped OpenCV tracking.")
+
 # --- Real-time Processing Loop ---
 while True:
     # Read a frame
@@ -244,6 +344,38 @@ while True:
     if not ret:
         print("Unable to read frame, exiting.")
         break
+
+    # Create a clean copy of the frame for tracking purposes
+    tracking_frame = frame.copy()
+
+    # Update the frame copy in the mouse callback parameter dictionary
+    cv2.setMouseCallback(main_window_name, select_object_callback, param={'name': main_window_name, 'frame_copy': tracking_frame})
+    cv2.setMouseCallback(objects_window_name, select_object_callback, param={'name': objects_window_name, 'frame_copy': tracking_frame})
+
+    # Handle tracking requests from the mouse callback
+    if tracking_request:
+        if tracking_request['action'] == 'start':
+            print("START_TRACKING_REQUEST received.")
+            start_cv_tracking(tracking_request['frame'], tracking_request['id'])
+        elif tracking_request['action'] == 'stop':
+            print("STOP_TRACKING_REQUEST received.")
+            stop_cv_tracking()
+        tracking_request = None # Reset request
+
+    # --- OpenCV Tracker Update (if active) ---
+    if is_cv_tracking and cv_tracker is not None:
+        ok, bbox = cv_tracker.update(tracking_frame)
+        if ok:
+            # Tracking success, draw a blue box for the CV tracker
+            p1 = (int(bbox[0]), int(bbox[1]))
+            p2 = (int(bbox[0] + bbox[2]), int(bbox[1] + bbox[3]))
+            cv2.rectangle(frame, p1, p2, (255, 0, 0), 2, 1) # Draw on the display frame
+            cv2.putText(frame, f"CV Tracking ID: {selected_obj_id}", (p1[0], p1[1] - 10), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
+        else:
+            # Tracking failure
+            print(f"OpenCV tracker lost object ID: {selected_obj_id}. Reverting to YOLO detection.")
+            stop_cv_tracking()
 
     now = time.time()
     # Perform real-time tracking
@@ -254,7 +386,8 @@ while True:
         imgsz=args.imgsz,
         persist=True,
         tracker=TRACKER_CONFIG,
-        classes=TARGET_CLASSES if TARGET_CLASSES else None # Filter by class
+        classes=TARGET_CLASSES if TARGET_CLASSES else None, # Filter by class
+        verbose=False # Debugging output from the model (set to True for more details
     )
 
     boxes = results[0].boxes
@@ -306,8 +439,11 @@ while True:
     
     # If selected object disappears, deselect it
     if selected_obj_id is not None and selected_obj_id not in object_dict:
-        print(f"Selected object {selected_obj_id} has disappeared.")
-        selected_obj_id = None
+        # Only reset if not in CV tracking mode (CV tracker has its own lost logic)
+        if not is_cv_tracking:
+            print(f"Selected object {selected_obj_id} has disappeared.")
+            selected_obj_id = None
+
 
     # Refresh object display window every REFRESH_INTERVAL seconds
     if now - last_panel_update > REFRESH_INTERVAL:
@@ -328,8 +464,13 @@ while True:
                     cv2.rectangle(crop_with_label, (0, 24), (CROP_SIZE-1, CROP_SIZE+23), color, 2)
 
                     # Draw selection highlight
-                    if obj_id == selected_obj_id:
-                        draw_dashed_rectangle(crop_with_label, (0, 24), (CROP_SIZE-1, CROP_SIZE+23), (0, 255, 255), 2, 5)
+                    if obj_id == selected_obj_id: # If this object is the selected one
+                        if is_cv_tracking:
+                            # Use a solid blue box to indicate active CV tracking
+                            cv2.rectangle(crop_with_label, (0, 24), (CROP_SIZE-1, CROP_SIZE+23), (255, 0, 0), 2)
+                        else:
+                            # Use a dashed yellow box for simple selection
+                            draw_dashed_rectangle(crop_with_label, (0, 24), (CROP_SIZE-1, CROP_SIZE+23), (0, 255, 255), 2, 5)
 
                     slot_crops[slot_idx] = crop_with_label
         # Arrange crops in grid
@@ -344,13 +485,14 @@ while True:
 
     # Show annotated frame as usual
     annotated_frame = results[0].plot()
-    # Draw selection highlight on the main frame
-    if selected_obj_id is not None:
+
+    # If not in CV tracking mode, draw the yellow selection highlight from YOLO's data
+    if selected_obj_id is not None and not is_cv_tracking:
         for box in last_known_boxes:
             if box.id is not None and int(box.id.item()) == selected_obj_id:
                 x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
                 draw_dashed_rectangle(annotated_frame, (x1, y1), (x2, y2), (0, 255, 255), 2)
-                break
+                break # Found it, no need to check others
 
     cv2.imshow(main_window_name, annotated_frame)
 
