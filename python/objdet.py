@@ -7,8 +7,8 @@ from ultralytics import YOLO
 # --- Configuration Parameters ---
 # Choose a YOLO model, e.g., 'n' (nano) or 's' (small); Switch models as needed
 # MODEL_NAME = 'yolov8n.pt' 
-# MODEL_NAME = 'yolo11n.pt'
-MODEL_NAME = 'yolov8n.pt'
+MODEL_NAME = 'yolo11n.pt'
+# MODEL_NAME = 'yolov8n.pt'
 
 # Set tracker config (optional, for tracking object IDs)
 TRACKER_CONFIG = 'bytetrack.yaml' # Choose a tracker
@@ -57,7 +57,7 @@ selected_obj_id = None
 last_known_boxes = [] # To store the latest bounding boxes for click detection
 cv_tracker = None
 is_cv_tracking = False
-CV_TRACKER_TYPE = 'CSRT' # CSRT (accurate), KCF (fast), MOSSE (fastest)
+CV_TRACKER_TYPE = 'TLD' # CSRT (accurate), KCF (fast), MOSSE (fastest)
 
 tracking_request = None # To handle requests from the mouse callback
 
@@ -171,9 +171,12 @@ actual_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 def create_cv_tracker():
     """Creates an OpenCV tracker based on the specified type, with error handling."""
     tracker_builders = {
-        'CSRT': cv2.TrackerCSRT_create,
-        'KCF': cv2.TrackerKCF_create,
-        'MIL': cv2.TrackerMIL_create
+        'CSRT': cv2.legacy.TrackerCSRT.create,
+        'KCF': cv2.legacy.TrackerKCF.create,
+        'MIL': cv2.legacy.TrackerMIL.create,
+        'MOSSE': cv2.legacy.TrackerMOSSE.create,
+        'MEDIANFLOW': cv2.legacy.TrackerMedianFlow.create,
+        'TLD': cv2.legacy.TrackerTLD.create,
     }
     try:
         builder = tracker_builders.get(CV_TRACKER_TYPE)
