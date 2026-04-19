@@ -57,7 +57,11 @@ selected_obj_id = None
 last_known_boxes = [] # To store the latest bounding boxes for click detection
 cv_tracker = None
 is_cv_tracking = False
-CV_TRACKER_TYPE = 'TLD' # CSRT (accurate), KCF (fast), MOSSE (fastest)
+CV_TRACKER_TYPE = 'NANOTRACK' # Options: 'NANOTRACK', 'CSRT', 'KCF', 'MIL', 'TLD', 'MOSSE'
+
+# NanoTrack Model Paths (Download these files to use NANOTRACK)
+NANOTRACK_BACKBONE = "nanotrack_backbone.onnx"
+NANOTRACK_HEAD = "nanotrack_head.onnx"
 
 tracking_request = None # To handle requests from the mouse callback
 
@@ -170,6 +174,26 @@ actual_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 # --- OpenCV Tracker Management ---
 def create_cv_tracker():
     """Creates an OpenCV tracker based on the specified type, with error handling."""
+    if CV_TRACKER_TYPE == 'NANOTRACK':
+        try:
+            import os
+            if not os.path.exists(NANOTRACK_BACKBONE) or not os.path.exists(NANOTRACK_HEAD):
+                print(f"\nError: NanoTrack models not found!")
+                print(f"Please ensure {NANOTRACK_BACKBONE} and {NANOTRACK_HEAD} are in the python/ directory.\n")
+                return None
+            
+            # Use TrackerNano from cv2 if available
+            params = cv2.TrackerNano_Params()
+            params.backbone = NANOTRACK_BACKBONE
+            params.neckhead = NANOTRACK_HEAD
+            # Change: Forced to use OPENCV backend for ONNX compatibility
+            params.backend = cv2.dnn.DNN_BACKEND_OPENCV
+            params.target = cv2.dnn.DNN_TARGET_CPU
+            return cv2.TrackerNano_create(params)
+        except Exception as e:
+            print(f"Error creating NanoTrack: {e}")
+            return None
+
     tracker_builders = {
         'CSRT': cv2.legacy.TrackerCSRT.create,
         'KCF': cv2.legacy.TrackerKCF.create,
@@ -183,7 +207,7 @@ def create_cv_tracker():
         if builder:
             return builder()
         else:
-            print(f"Error: Invalid tracker type '{CV_TRACKER_TYPE}'. Valid options are: {list(tracker_builders.keys())}")
+            print(f"Error: Invalid tracker type '{CV_TRACKER_TYPE}'. Valid options are: {list(tracker_builders.keys())} + 'NANOTRACK'")
             return None
     except AttributeError:
         print("\nError: Your OpenCV version is missing tracker modules (AttributeError).")
@@ -313,14 +337,38 @@ def start_cv_tracking(frame, obj_id):
             y1 = y1 + (height - new_height) // 2
             width, height = new_width, new_height
 
-        bbox_cv = (x1, y1, width, height)
+        # --- NanoTrack Specific Adjustment ---
+        # Deep learning trackers often need a significant margin from the frame edge to extract context
+        if CV_TRACKER_TYPE == 'NANOTRACK':
+            # Shrink the box by 5% to ensure the internal search window doesn't hit boundaries
+            shrink_factor = 0.05
+            dw = width * shrink_factor
+            dh = height * shrink_factor
+            x1 = int(x1 + dw)
+            y1 = int(y1 + dh)
+            width = int(width - 2 * dw)
+            height = int(height - 2 * dh)
+
+            # Ensure safe boundaries after shrinking
+            x1 = max(5, min(w - 10, x1))
+            y1 = max(5, min(h - 10, y1))
+            width = max(10, min(w - x1 - 5, width))
+            height = max(10, min(h - y1 - 5, height))
+
+        # Fix: OpenCV 4.13.0 TrackerNano.init strictly requires integers in some builds
+        bbox_cv = (int(x1), int(y1), int(width), int(height))
         
         cv_tracker = create_cv_tracker()
         if not cv_tracker:
             print("Error: Failed to create OpenCV tracker object.")
             return
 
-        is_initialized = cv_tracker.init(frame, bbox_cv)
+        try:
+            is_initialized = cv_tracker.init(frame, bbox_cv)
+        except Exception as e:
+            print(f"Exception during tracker init: {e}")
+            is_initialized = False
+
         if is_initialized:
              is_cv_tracking = True
              selected_obj_id = obj_id
@@ -332,6 +380,7 @@ def start_cv_tracking(frame, obj_id):
             print(f"  - Frame Shape: ({w}, {h}) (w, h)")
             print("  - Possible reasons: Object features are not clear, object is heavily occluded, or it's at the very edge of the frame.")
             is_cv_tracking = False
+            cv_tracker = None
 
 def stop_cv_tracking():
     global cv_tracker, is_cv_tracking, selected_obj_id
