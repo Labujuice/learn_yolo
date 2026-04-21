@@ -1,168 +1,104 @@
 # YOLO Object Detection & Tracking Demo
 
-This project provides real-time object detection and tracking demonstrations in both **Python** and **C++** using [Ultralytics YOLO](https://github.com/ultralytics/ultralytics) models with OpenCV. It supports live camera input, object cropping, and a dynamic object browsing window that displays detected objects.
+This project provides high-performance real-time object detection and tracking in both **Python** and **C++**. It utilizes [Ultralytics YOLO](https://github.com/ultralytics/ultralytics) for precise detection and integrates multiple OpenCV single-object trackers for robust target locking.
 
-## Features
+## Key Features
 
-- **Python**: Real-time object detection and multi-object tracking using the `ultralytics` library, combined with robust single-object tracking (DaSiamRPN, NanoTrack, CSRT, etc.) using OpenCV.
-- **C++**: Real-time object detection using OpenCV's DNN module with an ONNX model. (Note: Tracking is simplified and does not persist IDs across frames).
-- **Interactive Single-Object Tracking**: Click on any detected object's bounding box to lock onto it with OpenCV's dedicated trackers.
-- Object browsing window: Shows cropped images of detected objects, arranged in a grid.
-- Each object is displayed only after being continuously detected for a set threshold (default: 1s).
-- Objects remain in the browsing window for a set delay after disappearing (default: 3s).
-- Object slots are fixed: objects keep their position in the browsing window until they disappear.
-- Bounding boxes and labels are drawn on both the preview and object browsing windows.
-- Easy model switching: just change the `MODEL_NAME` in the code.
+*   **Hybrid Detection & Tracking (Python)**:
+    *   **YOLOv8/v11**: Handles global multi-object detection and persistent ID assignment.
+    *   **Advanced OpenCV Trackers**: Built-in support for NanoTrack, DaSiamRPN, CSRT, KCF, and MIL with real-time switching.
+*   **Top Control Panel (New!)**:
+    *   **Mode Toggle**: Switch between `YOLO Mode` (click to track detected objects) and `Manual Mode` (drag to track any ROI).
+    *   **Engine Toggle**: Switch between different tracking algorithms on-the-fly via UI buttons.
+    *   **Performance Metrics**: Real-time display of calculation time (ms) and execution frequency (Hz) for both detection and tracking modules.
+*   **Interactive Camera Selection**: Automatically scans and lists supported UVC camera resolutions and frame rates.
+*   **Performance Optimization**: Throttling mechanism allows independent frequency limits for detection and tracking to balance CPU/GPU load.
+*   **Object Browser Window**: A secondary window displaying a grid of detected object crops for easy monitoring and selection.
 
 ## Folder Structure
 
 ```plaintext
 ├── python/
-│   ├── objdet.py              # Main Python detection and tracking script
+│   ├── objdet.py              # Main script (Detection + UI Panel + Tracking)
 │   ├── tracking_example.py    # Simplified OpenCV-only tracking example
-│   ├── bytetrack.yaml         # Tracker configuration for Python script
-│   └── yolov8n.pt             # YOLOv8 nano model (default)
+│   ├── bytetrack.yaml         # YOLO internal tracker configuration
+│   └── *.onnx / *.pt          # Model weights for trackers and YOLO
 │
 └── cpp/
-    ├── main.cpp               # Main C++ detection script
-    ├── yolomodel_pt2onmx.py   # Script to convert .pt model to .onnx for C++
+    ├── main.cpp               # C++ detection demo (OpenCV DNN)
+    ├── yolomodel_pt2onmx.py   # Model conversion tool (.pt -> .onnx)
     └── yolov8n.onnx           # ONNX model for C++ version
 ```
 
-## Python Implementation
-
-The Python version uses the powerful `ultralytics` library to handle both detection and object tracking, providing persistent object IDs across frames.
+## Python Implementation Guide
 
 ### Requirements
 
-- Python 3.8+
-- Ultralytics (`pip install ultralytics`)
-- OpenCV (`pip install opencv-python`)
-- NumPy (`pip install numpy`)
+*   Python 3.10+
+*   `pip install ultralytics opencv-contrib-python numpy`
+*   *(Virtual environment recommended)*
 
-### Usage
+### Quick Start
 
-1.  **Download a YOLO model**  
-    Place your YOLO model (e.g., `yolov8n.pt`) in the `python/` directory.
-
-2.  **Run the script**
-    Navigate to the `python` directory and run the script.
-
-    *   **Basic execution (uses default camera 0):**
-        ```bash
-        cd python
-        python objdet.py
-        ```
-
-    *   **Interactive camera selection:**
-        Use the `--source` flag to choose a camera and its resolution/FPS.
-        ```bash
-        python objdet.py --source
-        ```
-
-    *   **Filter specific classes:**
-        Use `--classes` to detect only certain objects (e.g., person, car, bus). The class IDs are based on the COCO dataset.
-        ```bash
-        # Detect person (0), car (2), and bus (5)
-        python objdet.py --classes 0 2 5
-        ```
-
-    *   **Adjust confidence threshold:**
-        Use `--conf` to set a custom confidence level.
-        ```bash
-        python objdet.py --conf 0.5
-        ```
-
-3.  **Controls**
-    - **Click** on a bounding box in the main window or an object in the "Objects" window to start dedicated OpenCV tracking (e.g., DaSiamRPN, NanoTrack, CSRT) for that object. Click again to stop.
-    - Press `q` in the preview window to exit.
-
-### Simple Tracking Example (`tracking_example.py`)
-
-This project includes a standalone script focusing purely on OpenCV's tracking algorithms, without the YOLO detection overhead.
-
-1.  **Run the script**
+1.  **Basic Run**:
     ```bash
     cd python
-    python tracking_example.py
+    python objdet.py
     ```
+    *If no arguments are provided, an interactive menu will appear to help you select a camera mode.*
 
-    You can also specify the tracking algorithm using the `--tracker` argument:
+2.  **Advanced Run**:
     ```bash
-    python tracking_example.py --tracker NANOTRACK
+    # Specify resolution, detection frequency, and tracking frequency
+    python objdet.py --source 0 --source_cfg 1280x720@30 --det-freq 10 --track-freq 30
     ```
-    *(Supported trackers: `DASIAMRPN`, `NANOTRACK`, `CSRT`, `KCF`, `MIL`, `MOSSE`, `TLD`, `MEDIANFLOW`. Default is `CSRT`)*
 
-2.  **Usage**
-    - The camera feed will open.
-    - Drag to draw a bounding box around the object you want to track.
-    - Press **ENTER** or **SPACE** to confirm the selection and start tracking.
-    - Press **c** to cancel the selection.
-    - Press `q` to exit the application.
+### CLI Arguments
 
-### Configuration
+| Argument | Description | Example |
+| :--- | :--- | :--- |
+| `--source` | Camera index or video file path | `0` or `video.mp4` |
+| `--source_cfg` | Hardware resolution and FPS | `1920x1080@60` |
+| `--model` | YOLO model file path | `yolo11n.pt` |
+| `--classes` | Filter by COCO class IDs | `--classes 0 2` (person & car) |
+| `--conf` | Confidence threshold (0~1) | `--conf 0.5` |
+| `--det-freq` | Limit detection frequency (Hz) | `--det-freq 5` |
+| `--track-freq` | Limit tracking frequency (Hz) | `--track-freq 30` |
 
-#### Runtime Arguments
+### On-Screen Controls
 
-You can configure the script at runtime using the following command-line arguments:
-- `--source`: Show an interactive menu to select camera and resolution.
-- `--classes [ID ...]`: Filter detection by class IDs (e.g., `0` for person).
-- `--conf [0.0-1.0]`: Set the confidence threshold for detections (default: `0.4`).
-- `--imgsz [SIZE]`: Set the image size for inference (default: `640`).
-
-#### In-Script Parameters (`objdet.py`)
-
-- `MODEL_NAME`: Default model file name (e.g., `'yolov8n.pt'`).
-- `TRACKER_CONFIG`: Tracker configuration file (e.g., `'bytetrack.yaml'`).
-- `CV_TRACKER_TYPE`: The algorithm used for the single-object tracking on click. Options include `'DASIAMRPN'`, `'NANOTRACK'`, `'CSRT'`, `'KCF'`, `'MIL'`.
-- `APPEAR_THRESHOLD`: Seconds an object must be detected before display (default: 1).
-- `REMOVE_DELAY`: Seconds after disappearance before removing from display (default: 3).
-- `OBJECTS_PER_ROW`: Number of objects per row in the browsing window.
+*   **Top UI Panel**:
+    *   **YOLO Mode**: Click on a bounding box in the video or an item in the `Objects` window to lock onto it.
+    *   **Manual Mode**: Press and **drag the left mouse button** to draw an ROI. Tracking starts upon release.
+    *   **Tracker Selection**: Click `NANO`, `DaSiam`, `CSRT`, `KCF`, or `MIL` to switch the tracking engine instantly.
+*   **Keyboard**:
+    *   `q`: Exit the application.
 
 ---
 
-## C++ Implementation
+## C++ Implementation (OpenCV DNN)
 
-The C++ version uses OpenCV's DNN module to run a YOLO ONNX model. It offers high performance but features a simplified object identification mechanism where IDs are not persistent across frames (i.e., no true object tracking).
+The C++ version is optimized for raw performance and supports YOLO models via ONNX.
 
-### Requirements
+### Steps
 
-- A C++ compiler (e.g., g++, Clang, MSVC).
-- **OpenCV** (version 4.5.4 or newer recommended) installed and configured for your environment.
-
-### Setup & Usage
-
-1.  **Convert a YOLO model to ONNX format**  
-    The C++ version requires an `.onnx` model. You can convert a `.pt` model using the provided script.
+1.  **Convert Model**:
     ```bash
-    # Make sure you have ultralytics installed (pip install ultralytics)
     cd cpp
     python yolomodel_pt2onmx.py --input ../python/yolov8n.pt
     ```
-    This will create `yolov8n.onnx` in the `cpp/` directory.
-
-2.  **Compile the C++ code**  
-    You need to link against your installed OpenCV libraries. Here is an example command for Linux/macOS:
+2.  **Compile & Run**:
     ```bash
-    # Make sure you are in the cpp/ directory
     g++ main.cpp -o objdet_cpp `pkg-config --cflags --libs opencv4`
-    ```
-    *Note: The `pkg-config` command might differ based on your OS and OpenCV installation (`opencv4` vs `opencv`). For Windows (Visual Studio), you'll need to configure the include/library paths in your project settings.*
-
-3.  **Run the executable**
-    ```bash
     ./objdet_cpp
     ```
 
-4.  **Controls**
-    - Press `q` in the preview window to exit.
+## Important Notes
 
-## Notes
-
-- The object browsing window dynamically resizes based on the number of objects.
-- For best results, use a compatible USB camera.
+*   **Wayland Support**: On Linux systems using Wayland (e.g., Ubuntu/Gnome), the script automatically sets `QT_QPA_PLATFORM=xcb` to ensure window rendering and font support.
+*   **Model Files**: When using `NANOTRACK` or `DASIAMRPN`, ensure the required `.onnx` weight files are present in the `python/` directory.
 
 ## License
 
 This project is licensed under the **GNU Affero General Public License v3.0 (AGPL-3.0)**. 
-Please respect the licenses of the third-party libraries and models used (e.g., Ultralytics YOLO, OpenCV, SiamTrackers).
+Please respect the individual licenses of the third-party libraries and models used (e.g., Ultralytics YOLO, OpenCV).
