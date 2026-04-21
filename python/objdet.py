@@ -100,7 +100,7 @@ is_drawing = False
 drawing_start = None
 drawing_current = None
 
-UI_HEIGHT = 60
+UI_HEIGHT = 100
 MODE_BTNS = {
     'YOLO': (130, 5, 230, 25),
     'MANUAL': (240, 5, 340, 25)
@@ -112,6 +112,14 @@ TRACKER_BTNS = {
     'KCF': (390, 30, 440, 50),
     'MIL': (450, 30, 500, 50)
 }
+
+# Performance tracking variables
+det_calc_time = 0.0
+det_actual_fps = 0.0
+track_calc_time = 0.0
+track_actual_fps = 0.0
+last_det_exec_time = time.time()
+last_track_exec_time = time.time()
 
 
 def scan_camera_modes(camera_source):
@@ -459,7 +467,11 @@ while True:
 
     if is_cv_tracking and cv_tracker is not None:
         if track_interval == 0.0 or (now - last_track_time) >= track_interval:
+            t_start = time.time()
             ok, bbox = cv_tracker.update(tracking_frame)
+            track_calc_time = (time.time() - t_start) * 1000
+            track_actual_fps = 1.0 / (now - last_track_exec_time) if (now - last_track_exec_time) > 0 else 0
+            last_track_exec_time = now
             if ok:
                 last_tracker_bbox = bbox
             else:
@@ -470,7 +482,11 @@ while True:
     tracker_bbox = last_tracker_bbox
 
     if det_interval == 0.0 or (now - last_det_time) >= det_interval:
+        t_start = time.time()
         results = model.track(frame, conf=args.conf, imgsz=args.imgsz, persist=True, tracker=TRACKER_CONFIG, classes=TARGET_CLASSES if TARGET_CLASSES else None, verbose=False)
+        det_calc_time = (time.time() - t_start) * 1000
+        det_actual_fps = 1.0 / (now - last_det_exec_time) if (now - last_det_exec_time) > 0 else 0
+        last_det_exec_time = now
         last_results = results
         last_det_time = now
 
@@ -546,6 +562,7 @@ while True:
 
     cv2.putText(ui_panel, "Mode:", (10, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
     cv2.putText(ui_panel, "Tracker:", (10, 47), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
+    cv2.putText(ui_panel, "Performance:", (10, 85), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
 
     # Draw Tracker Buttons
     for t_name, coords in TRACKER_BTNS.items():
@@ -554,6 +571,13 @@ while True:
         short_name = t_name if t_name != 'DASIAMRPN' else 'DaSiam'
         short_name = short_name if short_name != 'NANOTRACK' else 'NANO'
         cv2.putText(ui_panel, short_name, (coords[0] + 5, coords[1] + 15), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0) if CV_TRACKER_TYPE == t_name else color, 1)
+
+    # Draw Performance Info
+    perf_y = 85
+    det_info = f"Det: {det_calc_time:.1f}ms ({det_actual_fps:.1f}Hz)"
+    trk_info = f"Trk: {track_calc_time:.1f}ms ({track_actual_fps:.1f}Hz)"
+    cv2.putText(ui_panel, det_info, (130, perf_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+    cv2.putText(ui_panel, trk_info, (330, perf_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 165, 255), 1)
 
     # Combine UI panel and annotated frame
     final_frame = np.vstack((ui_panel, annotated_frame))
