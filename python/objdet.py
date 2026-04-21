@@ -4,17 +4,20 @@ import argparse
 import numpy as np
 from ultralytics import YOLO
 
-# --- Configuration Parameters ---
-# Choose a YOLO model, e.g., 'n' (nano) or 's' (small); Switch models as needed
-MODEL_NAME = 'yolov8n.pt' 
-# MODEL_NAME = 'yolo11n.pt'
-# MODEL_NAME = 'yolov8n.pt'
-
-# Set tracker config (optional, for tracking object IDs)
-TRACKER_CONFIG = 'bytetrack.yaml' # Choose a tracker
-
-# --- Argument Parsing for Class Filtering ---
-parser = argparse.ArgumentParser(description="YOLO Object Detection and Tracking")
+# --- Argument Parsing ---
+parser = argparse.ArgumentParser(description="YOLO Object Detection and Tracking with OpenCV Single-Object Trackers")
+parser.add_argument(
+    '--source',
+    type=str,
+    default='0',
+    help="Camera source (e.g., '0' for default camera, '/dev/video1', or 'video.mp4'). Default is '0'."
+)
+parser.add_argument(
+    '--model',
+    type=str,
+    default='yolov8n.pt',
+    help="Path to the YOLO model to load (e.g., 'yolov8n.pt' or 'yolo11n.pt'). Default is 'yolov8n.pt'."
+)
 parser.add_argument(
     '--classes', 
     nargs='*', 
@@ -34,13 +37,24 @@ parser.add_argument(
     help="Image size for inference (e.g., 640, 1280)."
 )
 parser.add_argument(
-    '--source',
-    action='store_true',
-    help="Show an interactive menu to select camera source and resolution."
+    '--det-freq',
+    type=float,
+    default=0.0,
+    help="Detection frequency in Hz (FPS). 0 means use the source's native frequency (no limit)."
+)
+parser.add_argument(
+    '--track-freq',
+    type=float,
+    default=0.0,
+    help="Tracking frequency in Hz (FPS) for the OpenCV single-object tracker. 0 means use the source's native frequency."
 )
 args = parser.parse_args()
 
+MODEL_NAME = args.model
 TARGET_CLASSES = args.classes if args.classes is not None else []
+
+# Set tracker config (optional, for tracking object IDs)
+TRACKER_CONFIG = 'bytetrack.yaml' # Choose a tracker
 
 CROP_SIZE = 48
 APPEAR_THRESHOLD = 1    # Seconds an object must be continuously detected before display
@@ -71,107 +85,37 @@ DASIAMRPN_KERNEL_R1 = "dasiamrpn_kernel_r1.onnx"
 tracking_request = None # To handle requests from the mouse callback
 
 
-def select_camera_and_mode():
-    """
-    Scans for available cameras, lets the user select one, and then select a supported
-    resolution and frame rate.
-    Returns the selected camera index, width, and height.
-    """
-    # 1. Scan for available cameras
-    available_cameras = []
-    print("Scanning for available cameras...")
-    for i in range(10):  # Check up to 10 camera indices
-        cap = cv2.VideoCapture(i)
-        if cap.isOpened():
-            available_cameras.append(i)
-            cap.release()
-    
-    if not available_cameras:
-        print("Error: No cameras found.")
-        return None, None, None
-
-    # 2. Let user select a camera
-    print("\nPlease select a camera:")
-    for idx in available_cameras:
-        print(f"  [{idx}] Camera {idx}")
-    
-    camera_idx = -1
-    while camera_idx not in available_cameras:
-        try:
-            camera_idx = int(input(f"Enter camera index {available_cameras}: "))
-        except ValueError:
-            print("Invalid input. Please enter a number.")
-
-    # 3. List supported resolutions and FPS for the selected camera
-    print(f"\nChecking supported modes for Camera {camera_idx}...")
-    cap = cv2.VideoCapture(camera_idx)
-    supported_modes = set()
-    common_resolutions = [(1920, 1080), (1280, 720), (640, 480), (320, 240)]
-    common_fps = [60, 30, 24, 15]
-
-    for w, h in common_resolutions:
-        for fps in common_fps:
-            cap.set(cv2.CAP_PROP_FRAME_WIDTH, w)
-            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, h)
-            cap.set(cv2.CAP_PROP_FPS, fps)
-            actual_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-            actual_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-            actual_fps = int(cap.get(cv2.CAP_PROP_FPS))
-            if actual_w == w and actual_h == h and actual_fps > 0:
-                 supported_modes.add((actual_w, actual_h, actual_fps))
-
-    cap.release()
-
-    if not supported_modes:
-        print("Warning: Could not determine supported modes. Using default settings.")
-        return camera_idx, None, None
-
-    # 4. Let user select a mode
-    modes = sorted(list(supported_modes), key=lambda x: (x[0], x[2]), reverse=True)
-    print("\nPlease select a resolution and FPS:")
-    for i, (w, h, fps) in enumerate(modes):
-        print(f"  [{i}] {w}x{h} @ {fps} FPS")
-    
-    mode_idx = -1
-    while not (0 <= mode_idx < len(modes)):
-        try:
-            mode_idx = int(input(f"Enter mode index [0-{len(modes)-1}]: "))
-        except ValueError:
-            print("Invalid input. Please enter a number.")
-            
-    selected_mode = modes[mode_idx]
-    return camera_idx, selected_mode[0], selected_mode[1], selected_mode[2]
-
 # Load YOLO model
 try:
     model = YOLO(MODEL_NAME)
-    # model = YOLO(MODEL_NAME).to('cuda') 
     print(f"Model loaded successfully: {MODEL_NAME}")
 except Exception as e:
     print(f"Failed to load model: {e}")
     exit()
 
 # --- Camera Setup ---
-if args.source:
-    CAMERA_SOURCE, FRAME_WIDTH, FRAME_HEIGHT, FPS = select_camera_and_mode()
-    if CAMERA_SOURCE is None:
-        exit()
-else:
-    # Use default camera source without interactive selection
-    CAMERA_SOURCE = 0  # Default camera
-    FRAME_WIDTH, FRAME_HEIGHT, FPS = None, None, None
-    print("Using default camera source 0. Use --source for interactive selection.")
-
-# Start UVC camera (VideoCapture)
-cap = cv2.VideoCapture(CAMERA_SOURCE)
-if FRAME_WIDTH and FRAME_HEIGHT and FPS:
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, FRAME_WIDTH)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_HEIGHT)
-    cap.set(cv2.CAP_PROP_FPS, FPS)
+source_val = int(args.source) if args.source.isdigit() else args.source
+cap = cv2.VideoCapture(source_val)
 
 if not cap.isOpened():
-    print(f"Error: Unable to open camera source {CAMERA_SOURCE}")
+    print(f"Error: Unable to open camera source {args.source}")
     exit()
+
+source_fps = cap.get(cv2.CAP_PROP_FPS)
+if source_fps <= 0 or np.isnan(source_fps):
+    source_fps = 30.0 # fallback
+
+det_freq = args.det_freq if 0 < args.det_freq <= source_fps else source_fps
+track_freq = args.track_freq if 0 < args.track_freq <= source_fps else source_fps
+
+det_interval = 1.0 / det_freq if args.det_freq > 0 else 0.0
+track_interval = 1.0 / track_freq if args.track_freq > 0 else 0.0
+
+print(f"Camera connected successfully.")
+print(f"Source FPS: {source_fps:.2f}, Detection Freq: {'No limit' if args.det_freq == 0 else f'{det_freq:.2f} Hz'}, Tracking Freq: {'No limit' if args.track_freq == 0 else f'{track_freq:.2f} Hz'}")
+
+actual_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+actual_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
 actual_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
 actual_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
@@ -279,7 +223,7 @@ cv2.namedWindow(objects_window_name)
 cv2.setMouseCallback(main_window_name, select_object_callback, param={'name': main_window_name})
 cv2.setMouseCallback(objects_window_name, select_object_callback, param={'name': objects_window_name})
 
-print(f"Camera {CAMERA_SOURCE} connected successfully. Using model: {MODEL_NAME}. Press 'q' to exit.")
+print(f"Camera {args.source} connected successfully. Using model: {MODEL_NAME}. Press 'q' to exit.")
 
 MAX_OBJECTS = OBJECTS_PER_ROW * 8
 object_slots = [None] * MAX_OBJECTS
@@ -344,53 +288,67 @@ def stop_cv_tracking():
     is_cv_tracking, cv_tracker, selected_obj_id = False, None, None
     print("Stopped CV tracking.")
 
+last_det_time = 0.0
+last_track_time = 0.0
+last_results = None
+last_tracker_bbox = None
+
 while True:
     ret, frame = cap.read()
     if not ret: break
 
+    now = time.time()
     tracking_frame = frame.copy()
 
     if tracking_request:
         if tracking_request['action'] == 'start':
             start_cv_tracking(tracking_frame, tracking_request['id'])
+            last_tracker_bbox = None
         elif tracking_request['action'] == 'stop':
             stop_cv_tracking()
+            last_tracker_bbox = None
         tracking_request = None
 
-    tracker_bbox = None
     if is_cv_tracking and cv_tracker is not None:
-        ok, bbox = cv_tracker.update(tracking_frame)
-        if ok:
-            tracker_bbox = bbox
-        else:
-            stop_cv_tracking()
+        if track_interval == 0.0 or (now - last_track_time) >= track_interval:
+            ok, bbox = cv_tracker.update(tracking_frame)
+            if ok:
+                last_tracker_bbox = bbox
+            else:
+                stop_cv_tracking()
+                last_tracker_bbox = None
+            last_track_time = now
 
-    now = time.time()
-    results = model.track(frame, conf=args.conf, imgsz=args.imgsz, persist=True, tracker=TRACKER_CONFIG, classes=TARGET_CLASSES if TARGET_CLASSES else None, verbose=False)
+    tracker_bbox = last_tracker_bbox
 
-    boxes = results[0].boxes
-    names = results[0].names if hasattr(results[0], 'names') else {}
-    current_ids = set()
-    last_known_boxes = boxes if boxes is not None and hasattr(boxes, 'id') else []
+    if det_interval == 0.0 or (now - last_det_time) >= det_interval:
+        results = model.track(frame, conf=args.conf, imgsz=args.imgsz, persist=True, tracker=TRACKER_CONFIG, classes=TARGET_CLASSES if TARGET_CLASSES else None, verbose=False)
+        last_results = results
+        last_det_time = now
 
-    if boxes is not None and hasattr(boxes, 'id'):
-        for box in boxes:
-            obj_id = int(box.id.item()) if box.id is not None else None
-            if obj_id is not None:
-                x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
-                crop = frame[y1:y2, x1:x2]
-                if crop.size > 0:
-                    crop_resized = cv2.resize(crop, (CROP_SIZE, CROP_SIZE))
-                    cls_id = int(box.cls.item()) if hasattr(box, 'cls') else -1
-                    obj_name = names[cls_id] if cls_id in names else f"ID{obj_id}"
-                    if obj_id not in object_dict:
-                        object_dict[obj_id] = {'crop': crop_resized, 'last_seen': now, 'first_seen': now, 'name': obj_name, 'visible': True}
-                    else:
-                        object_dict[obj_id].update({'crop': crop_resized, 'last_seen': now, 'visible': True})
-                    current_ids.add(obj_id)
+        boxes = results[0].boxes
+        names = results[0].names if hasattr(results[0], 'names') else {}
+        current_ids = set()
+        last_known_boxes = boxes if boxes is not None and hasattr(boxes, 'id') else []
 
-    for oid in object_dict:
-        if oid not in current_ids: object_dict[oid]['visible'] = False
+        if boxes is not None and hasattr(boxes, 'id'):
+            for box in boxes:
+                obj_id = int(box.id.item()) if box.id is not None else None
+                if obj_id is not None:
+                    x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
+                    crop = frame[y1:y2, x1:x2]
+                    if crop.size > 0:
+                        crop_resized = cv2.resize(crop, (CROP_SIZE, CROP_SIZE))
+                        cls_id = int(box.cls.item()) if hasattr(box, 'cls') else -1
+                        obj_name = names[cls_id] if cls_id in names else f"ID{obj_id}"
+                        if obj_id not in object_dict:
+                            object_dict[obj_id] = {'crop': crop_resized, 'last_seen': now, 'first_seen': now, 'name': obj_name, 'visible': True}
+                        else:
+                            object_dict[obj_id].update({'crop': crop_resized, 'last_seen': now, 'visible': True})
+                        current_ids.add(obj_id)
+
+        for oid in object_dict:
+            if oid not in current_ids: object_dict[oid]['visible'] = False
 
     remove_ids = [oid for oid, info in object_dict.items() if not info['visible'] and now - info['last_seen'] > REMOVE_DELAY]
     for oid in remove_ids:
@@ -419,7 +377,10 @@ while True:
         cv2.imshow(objects_window_name, np.vstack(rows))
         last_panel_update = now
 
-    annotated_frame = results[0].plot()
+    annotated_frame = frame.copy()
+    if last_results is not None:
+        last_results[0].orig_img = annotated_frame
+        annotated_frame = last_results[0].plot()
 
     if tracker_bbox is not None:
         p1 = (int(tracker_bbox[0]), int(tracker_bbox[1]))
