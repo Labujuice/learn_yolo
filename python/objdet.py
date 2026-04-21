@@ -99,8 +99,19 @@ app_mode = 'YOLO'  # 'YOLO' or 'MANUAL'
 is_drawing = False
 drawing_start = None
 drawing_current = None
-BTN_YOLO = (10, 10, 160, 45)    # (x1, y1, x2, y2)
-BTN_MANUAL = (170, 10, 330, 45) # (x1, y1, x2, y2)
+
+UI_HEIGHT = 60
+MODE_BTNS = {
+    'YOLO': (130, 5, 230, 25),
+    'MANUAL': (240, 5, 340, 25)
+}
+TRACKER_BTNS = {
+    'NANOTRACK': (130, 30, 210, 50),
+    'DASIAMRPN': (220, 30, 310, 50),
+    'CSRT': (320, 30, 380, 50),
+    'KCF': (390, 30, 440, 50),
+    'MIL': (450, 30, 500, 50)
+}
 
 
 def scan_camera_modes(camera_source):
@@ -247,22 +258,33 @@ def create_cv_tracker():
 
 # --- Mouse Callback for Object Selection ---
 def select_object_callback(event, x, y, flags, param):
-    global selected_obj_id, tracking_request, app_mode, is_drawing, drawing_start, drawing_current
+    global selected_obj_id, tracking_request, app_mode, is_drawing, drawing_start, drawing_current, CV_TRACKER_TYPE
     window_name = param['name']
 
     # Handle Mode UI Clicks
-    if event == cv2.EVENT_LBUTTONDOWN and window_name == main_window_name:
-        if BTN_YOLO[0] <= x <= BTN_YOLO[2] and BTN_YOLO[1] <= y <= BTN_YOLO[3]:
-            app_mode = 'YOLO'
-            tracking_request = {'action': 'stop'}
-            selected_obj_id = None
-            is_drawing = False
+    if window_name == main_window_name:
+        if y < UI_HEIGHT:
+            if event == cv2.EVENT_LBUTTONDOWN:
+                if MODE_BTNS['YOLO'][0] <= x <= MODE_BTNS['YOLO'][2] and MODE_BTNS['YOLO'][1] <= y <= MODE_BTNS['YOLO'][3]:
+                    app_mode = 'YOLO'
+                    tracking_request = {'action': 'stop'}
+                    selected_obj_id = None
+                    is_drawing = False
+                elif MODE_BTNS['MANUAL'][0] <= x <= MODE_BTNS['MANUAL'][2] and MODE_BTNS['MANUAL'][1] <= y <= MODE_BTNS['MANUAL'][3]:
+                    app_mode = 'MANUAL'
+                    tracking_request = {'action': 'stop'}
+                    selected_obj_id = None
+                else:
+                    for tracker_name, coords in TRACKER_BTNS.items():
+                        if coords[0] <= x <= coords[2] and coords[1] <= y <= coords[3]:
+                            CV_TRACKER_TYPE = tracker_name
+                            tracking_request = {'action': 'stop'}
+                            selected_obj_id = None
+                            break
             return
-        elif BTN_MANUAL[0] <= x <= BTN_MANUAL[2] and BTN_MANUAL[1] <= y <= BTN_MANUAL[3]:
-            app_mode = 'MANUAL'
-            tracking_request = {'action': 'stop'}
-            selected_obj_id = None
-            return
+        
+        # Offset y for frame logic
+        y -= UI_HEIGHT
 
     if app_mode == 'YOLO':
         if event == cv2.EVENT_LBUTTONDOWN:
@@ -509,32 +531,52 @@ while True:
         last_results[0].orig_img = annotated_frame
         annotated_frame = last_results[0].plot()
 
-    # Draw UI Buttons
+    # Create UI Panel
+    frame_h, frame_w = annotated_frame.shape[:2]
+    ui_panel = np.zeros((UI_HEIGHT, frame_w, 3), dtype=np.uint8)
+
+    # Draw Mode Buttons
     yolo_color = (0, 255, 0) if app_mode == 'YOLO' else (150, 150, 150)
-    cv2.rectangle(annotated_frame, (BTN_YOLO[0], BTN_YOLO[1]), (BTN_YOLO[2], BTN_YOLO[3]), yolo_color, -1 if app_mode == 'YOLO' else 2)
-    cv2.putText(annotated_frame, "YOLO Mode", (BTN_YOLO[0] + 20, BTN_YOLO[1] + 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0) if app_mode == 'YOLO' else yolo_color, 2)
+    cv2.rectangle(ui_panel, (MODE_BTNS['YOLO'][0], MODE_BTNS['YOLO'][1]), (MODE_BTNS['YOLO'][2], MODE_BTNS['YOLO'][3]), yolo_color, -1 if app_mode == 'YOLO' else 2)
+    cv2.putText(ui_panel, "YOLO", (MODE_BTNS['YOLO'][0] + 15, MODE_BTNS['YOLO'][1] + 17), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0) if app_mode == 'YOLO' else yolo_color, 2)
 
     manual_color = (0, 165, 255) if app_mode == 'MANUAL' else (150, 150, 150)
-    cv2.rectangle(annotated_frame, (BTN_MANUAL[0], BTN_MANUAL[1]), (BTN_MANUAL[2], BTN_MANUAL[3]), manual_color, -1 if app_mode == 'MANUAL' else 2)
-    cv2.putText(annotated_frame, "Manual Mode", (BTN_MANUAL[0] + 15, BTN_MANUAL[1] + 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0) if app_mode == 'MANUAL' else manual_color, 2)
+    cv2.rectangle(ui_panel, (MODE_BTNS['MANUAL'][0], MODE_BTNS['MANUAL'][1]), (MODE_BTNS['MANUAL'][2], MODE_BTNS['MANUAL'][3]), manual_color, -1 if app_mode == 'MANUAL' else 2)
+    cv2.putText(ui_panel, "Manual", (MODE_BTNS['MANUAL'][0] + 15, MODE_BTNS['MANUAL'][1] + 17), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0) if app_mode == 'MANUAL' else manual_color, 2)
 
-    # Draw manual drawing rectangle
+    cv2.putText(ui_panel, "Mode:", (10, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
+    cv2.putText(ui_panel, "Tracker:", (10, 47), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
+
+    # Draw Tracker Buttons
+    for t_name, coords in TRACKER_BTNS.items():
+        color = (0, 255, 255) if CV_TRACKER_TYPE == t_name else (150, 150, 150)
+        cv2.rectangle(ui_panel, (coords[0], coords[1]), (coords[2], coords[3]), color, -1 if CV_TRACKER_TYPE == t_name else 1)
+        short_name = t_name if t_name != 'DASIAMRPN' else 'DaSiam'
+        short_name = short_name if short_name != 'NANOTRACK' else 'NANO'
+        cv2.putText(ui_panel, short_name, (coords[0] + 5, coords[1] + 15), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0) if CV_TRACKER_TYPE == t_name else color, 1)
+
+    # Combine UI panel and annotated frame
+    final_frame = np.vstack((ui_panel, annotated_frame))
+
+    # Draw manual drawing rectangle (adjusted for UI_HEIGHT)
     if is_drawing and drawing_start and drawing_current:
-        cv2.rectangle(annotated_frame, drawing_start, drawing_current, (255, 255, 0), 2)
+        p1 = (drawing_start[0], drawing_start[1] + UI_HEIGHT)
+        p2 = (drawing_current[0], drawing_current[1] + UI_HEIGHT)
+        cv2.rectangle(final_frame, p1, p2, (255, 255, 0), 2)
 
     if tracker_bbox is not None:
-        p1 = (int(tracker_bbox[0]), int(tracker_bbox[1]))
-        p2 = (int(tracker_bbox[0] + tracker_bbox[2]), int(tracker_bbox[1] + tracker_bbox[3]))
-        cv2.rectangle(annotated_frame, p1, p2, (255, 0, 0), 2)
-        cv2.putText(annotated_frame, f"{CV_TRACKER_TYPE} ID: {selected_obj_id}", (p1[0], p1[1] - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
+        p1 = (int(tracker_bbox[0]), int(tracker_bbox[1]) + UI_HEIGHT)
+        p2 = (int(tracker_bbox[0] + tracker_bbox[2]), int(tracker_bbox[1] + tracker_bbox[3]) + UI_HEIGHT)
+        cv2.rectangle(final_frame, p1, p2, (255, 0, 0), 2)
+        cv2.putText(final_frame, f"{CV_TRACKER_TYPE} ID: {selected_obj_id}", (p1[0], p1[1] - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
 
     if selected_obj_id is not None and not is_cv_tracking and isinstance(selected_obj_id, int):
         for box in last_known_boxes:
             if box.id is not None and int(box.id.item()) == selected_obj_id:
                 x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
-                draw_dashed_rectangle(annotated_frame, (x1, y1), (x2, y2), (0, 255, 255), 2)
+                draw_dashed_rectangle(final_frame, (x1, y1 + UI_HEIGHT), (x2, y2 + UI_HEIGHT), (0, 255, 255), 2)
                 break
-    cv2.imshow(main_window_name, annotated_frame)
+    cv2.imshow(main_window_name, final_frame)
     if cv2.waitKey(1) & 0xFF == ord('q'): break
 
 cap.release()
