@@ -1,7 +1,11 @@
+import os
+os.environ["QT_QPA_PLATFORM"] = "xcb"
+
 import cv2
 import time
 import argparse
 import numpy as np
+import re
 from ultralytics import YOLO
 
 # --- Argument Parsing ---
@@ -11,6 +15,12 @@ parser.add_argument(
     type=str,
     default='0',
     help="Camera source (e.g., '0' for default camera, '/dev/video1', or 'video.mp4'). Default is '0'."
+)
+parser.add_argument(
+    '--source_cfg',
+    type=str,
+    default=None,
+    help="Directly specify camera resolution and FPS (e.g., '1920x1080@30'). If not specified, an interactive menu will appear for cameras."
 )
 parser.add_argument(
     '--model',
@@ -85,6 +95,29 @@ DASIAMRPN_KERNEL_R1 = "dasiamrpn_kernel_r1.onnx"
 tracking_request = None # To handle requests from the mouse callback
 
 
+def scan_camera_modes(camera_source):
+    print(f"\nScanning supported modes for Camera {camera_source}...")
+    temp_cap = cv2.VideoCapture(camera_source)
+    if not temp_cap.isOpened():
+        return []
+    
+    supported_modes = set()
+    common_resolutions = [(1920, 1080), (1280, 720), (800, 600), (640, 480), (320, 240)]
+    common_fps = [60, 30, 24, 15]
+
+    for w, h in common_resolutions:
+        for fps in common_fps:
+            temp_cap.set(cv2.CAP_PROP_FRAME_WIDTH, w)
+            temp_cap.set(cv2.CAP_PROP_FRAME_HEIGHT, h)
+            temp_cap.set(cv2.CAP_PROP_FPS, fps)
+            actual_w = int(temp_cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            actual_h = int(temp_cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            actual_fps = int(temp_cap.get(cv2.CAP_PROP_FPS))
+            if actual_w == w and actual_h == h and actual_fps > 0:
+                 supported_modes.add((actual_w, actual_h, actual_fps))
+    temp_cap.release()
+    return sorted(list(supported_modes), key=lambda x: (x[0], x[2]), reverse=True)
+
 # Load YOLO model
 try:
     model = YOLO(MODEL_NAME)
@@ -95,7 +128,39 @@ except Exception as e:
 
 # --- Camera Setup ---
 source_val = int(args.source) if args.source.isdigit() else args.source
+is_camera = isinstance(source_val, int) or str(source_val).startswith('/dev/video')
+
+req_w, req_h, req_fps = None, None, None
+
+if is_camera:
+    if args.source_cfg:
+        match = re.match(r"(\d+)x(\d+)@(\d+)", args.source_cfg)
+        if match:
+            req_w, req_h, req_fps = map(int, match.groups())
+            print(f"Using provided source config: {req_w}x{req_h} @ {req_fps} FPS")
+        else:
+            print("Invalid format for --source_cfg. Expected WIDTHxHEIGHT@FPS (e.g., 1280x720@30).")
+    else:
+        modes = scan_camera_modes(source_val)
+        if modes:
+            print("\nPlease select a resolution and FPS:")
+            for i, (w, h, fps) in enumerate(modes):
+                print(f"  [{i}] {w}x{h} @ {fps} FPS")
+            mode_idx = -1
+            while not (0 <= mode_idx < len(modes)):
+                try:
+                    mode_idx = int(input(f"Enter mode index [0-{len(modes)-1}]: "))
+                except ValueError:
+                    print("Invalid input. Please enter a number.")
+            req_w, req_h, req_fps = modes[mode_idx]
+        else:
+            print("Warning: Could not determine supported modes automatically.")
+
 cap = cv2.VideoCapture(source_val)
+if req_w and req_h and req_fps:
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, req_w)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, req_h)
+    cap.set(cv2.CAP_PROP_FPS, req_fps)
 
 if not cap.isOpened():
     print(f"Error: Unable to open camera source {args.source}")
@@ -103,7 +168,7 @@ if not cap.isOpened():
 
 source_fps = cap.get(cv2.CAP_PROP_FPS)
 if source_fps <= 0 or np.isnan(source_fps):
-    source_fps = 30.0 # fallback
+    source_fps = req_fps if req_fps else 30.0 # fallback
 
 det_freq = args.det_freq if 0 < args.det_freq <= source_fps else source_fps
 track_freq = args.track_freq if 0 < args.track_freq <= source_fps else source_fps
@@ -111,14 +176,10 @@ track_freq = args.track_freq if 0 < args.track_freq <= source_fps else source_fp
 det_interval = 1.0 / det_freq if args.det_freq > 0 else 0.0
 track_interval = 1.0 / track_freq if args.track_freq > 0 else 0.0
 
-print(f"Camera connected successfully.")
+actual_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+actual_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+print(f"Camera connected successfully at {actual_w}x{actual_h}.")
 print(f"Source FPS: {source_fps:.2f}, Detection Freq: {'No limit' if args.det_freq == 0 else f'{det_freq:.2f} Hz'}, Tracking Freq: {'No limit' if args.track_freq == 0 else f'{track_freq:.2f} Hz'}")
-
-actual_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-actual_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-
-actual_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-actual_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
 # --- OpenCV Tracker Management ---
 def create_cv_tracker():
