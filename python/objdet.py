@@ -8,7 +8,7 @@ from ultralytics import YOLO
 # Choose a YOLO model, e.g., 'n' (nano) or 's' (small); Switch models as needed
 MODEL_NAME = 'yolov8n.pt' 
 # MODEL_NAME = 'yolo11n.pt'
-# MODEL_NAME = 'yolo12n.pt'
+# MODEL_NAME = 'yolov8n.pt'
 
 # Set tracker config (optional, for tracking object IDs)
 TRACKER_CONFIG = 'bytetrack.yaml' # Choose a tracker
@@ -51,6 +51,25 @@ OBJECTS_PER_ROW = 8   # Number of objects per row
 # Track each obj_id: {'crop': ..., 'last_seen': ..., 'first_seen': ..., 'name': ..., 'visible': ...}
 object_dict = {}
 last_panel_update = time.time()
+
+# --- Global variables for selection ---
+selected_obj_id = None
+last_known_boxes = [] # To store the latest bounding boxes for click detection
+cv_tracker = None
+is_cv_tracking = False
+CV_TRACKER_TYPE = 'NANOTRACK' # Options: 'DASIAMRPN', 'NANOTRACK', 'CSRT', 'KCF', 'MIL'
+
+# Tracker Model Paths
+NANOTRACK_BACKBONE = "nanotrack_backbone.onnx"
+NANOTRACK_HEAD = "nanotrack_head.onnx"
+
+# DaSiamRPN requires THREE files
+DASIAMRPN_MODEL = "dasiamrpn_model.onnx"
+DASIAMRPN_KERNEL_CLS1 = "dasiamrpn_kernel_cls1.onnx"
+DASIAMRPN_KERNEL_R1 = "dasiamrpn_kernel_r1.onnx"
+
+tracking_request = None # To handle requests from the mouse callback
+
 
 def select_camera_and_mode():
     """
@@ -126,6 +145,7 @@ def select_camera_and_mode():
 # Load YOLO model
 try:
     model = YOLO(MODEL_NAME)
+    # model = YOLO(MODEL_NAME).to('cuda') 
     print(f"Model loaded successfully: {MODEL_NAME}")
 except Exception as e:
     print(f"Failed to load model: {e}")
@@ -156,132 +176,266 @@ if not cap.isOpened():
 actual_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
 actual_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
-print(f"Camera {CAMERA_SOURCE} connected successfully ({actual_w}x{actual_h}). Using model: {MODEL_NAME}. Press 'q' to exit.")
+# --- OpenCV Tracker Management ---
+def create_cv_tracker():
+    """Creates an OpenCV tracker based on the specified type, with error handling."""
+    if CV_TRACKER_TYPE == 'DASIAMRPN':
+        try:
+            import os
+            required_files = [DASIAMRPN_MODEL, DASIAMRPN_KERNEL_CLS1, DASIAMRPN_KERNEL_R1]
+            if any(not os.path.exists(f) for f in required_files):
+                print(f"\nError: DaSiamRPN models missing! Please ensure all 3 files are in the python/ directory.")
+                return None
+            params = cv2.TrackerDaSiamRPN_Params()
+            params.model = DASIAMRPN_MODEL
+            params.kernel_cls1 = DASIAMRPN_KERNEL_CLS1
+            params.kernel_r1 = DASIAMRPN_KERNEL_R1
+            params.backend = cv2.dnn.DNN_BACKEND_OPENCV
+            params.target = cv2.dnn.DNN_TARGET_CPU
+            return cv2.TrackerDaSiamRPN_create(params)
+        except Exception as e:
+            print(f"Error creating DaSiamRPN: {e}")
+            return None
 
-# Add these lines before the main loop to manage fixed slots for object display
-MAX_OBJECTS = OBJECTS_PER_ROW * 8  # You can adjust the max number of slots as needed
-object_slots = [None] * MAX_OBJECTS  # Each slot holds an obj_id or None
+    if CV_TRACKER_TYPE == 'NANOTRACK':
+        try:
+            import os
+            if not os.path.exists(NANOTRACK_BACKBONE) or not os.path.exists(NANOTRACK_HEAD):
+                print(f"\nError: NanoTrack models not found!")
+                return None
+            params = cv2.TrackerNano_Params()
+            params.backbone = NANOTRACK_BACKBONE
+            params.neckhead = NANOTRACK_HEAD
+            params.backend = cv2.dnn.DNN_BACKEND_OPENCV
+            params.target = cv2.dnn.DNN_TARGET_CPU
+            return cv2.TrackerNano_create(params)
+        except Exception as e:
+            print(f"Error creating NanoTrack: {e}")
+            return None
+
+    tracker_builders = {
+        'CSRT': cv2.legacy.TrackerCSRT.create,
+        'KCF': cv2.legacy.TrackerKCF.create,
+        'MIL': cv2.legacy.TrackerMIL.create,
+        'MOSSE': cv2.legacy.TrackerMOSSE.create,
+        'MEDIANFLOW': cv2.legacy.TrackerMedianFlow.create,
+        'TLD': cv2.legacy.TrackerTLD.create,
+    }
+    try:
+        builder = tracker_builders.get(CV_TRACKER_TYPE)
+        if builder:
+            return builder()
+        else:
+            print(f"Error: Invalid tracker type '{CV_TRACKER_TYPE}'.")
+            return None
+    except AttributeError:
+        print("\nError: Your OpenCV version is missing tracker modules.")
+        return None
+
+# --- Mouse Callback for Object Selection ---
+def select_object_callback(event, x, y, flags, param):
+    global selected_obj_id, tracking_request
+    window_name = param['name']
+
+    if event == cv2.EVENT_LBUTTONDOWN:
+        found_id = None
+        if window_name == objects_window_name:
+            col = x // CROP_SIZE
+            row = y // (CROP_SIZE + 24)
+            slot_idx = row * OBJECTS_PER_ROW + col
+            if 0 <= slot_idx < len(object_slots):
+                found_id = object_slots[slot_idx]
+        else:
+            for box in last_known_boxes:
+                x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
+                if x1 <= x <= x2 and y1 <= y <= y2:
+                    found_id = int(box.id.item())
+                    break
+        
+        if found_id is not None:
+            if selected_obj_id == found_id:
+                selected_obj_id = None
+                tracking_request = {'action': 'stop'}
+            else:
+                selected_obj_id = found_id
+                tracking_request = {'action': 'start', 'id': found_id}
+        elif is_cv_tracking:
+            tracking_request = {'action': 'stop'}
+
+def draw_dashed_rectangle(img, pt1, pt2, color, thickness=1, dash_length=10):
+    x1, y1 = pt1
+    x2, y2 = pt2
+    for i in range(x1, x2, dash_length * 2):
+        cv2.line(img, (i, y1), (min(i + dash_length, x2), y1), color, thickness)
+        cv2.line(img, (i, y2), (min(i + dash_length, x2), y2), color, thickness)
+    for i in range(y1, y2, dash_length * 2):
+        cv2.line(img, (x1, i), (x1, min(i + dash_length, y2)), color, thickness)
+        cv2.line(img, (x2, i), (x2, min(i + dash_length, y2)), color, thickness)
+
+main_window_name = f"YOLO Real-Time Tracking [{MODEL_NAME}] (Press 'q' to exit)"
+objects_window_name = "Objects"
+cv2.namedWindow(main_window_name)
+cv2.namedWindow(objects_window_name)
+cv2.setMouseCallback(main_window_name, select_object_callback, param={'name': main_window_name})
+cv2.setMouseCallback(objects_window_name, select_object_callback, param={'name': objects_window_name})
+
+print(f"Camera {CAMERA_SOURCE} connected successfully. Using model: {MODEL_NAME}. Press 'q' to exit.")
+
+MAX_OBJECTS = OBJECTS_PER_ROW * 8
+object_slots = [None] * MAX_OBJECTS
 
 def assign_slot(obj_id):
-    # If already assigned, return its slot
     for idx, oid in enumerate(object_slots):
-        if oid == obj_id:
-            return idx
-    # Find first empty slot
+        if oid == obj_id: return idx
     for idx, oid in enumerate(object_slots):
         if oid is None:
             object_slots[idx] = obj_id
             return idx
-    # If no empty slot, do not assign (or you can implement replacement policy)
     return None
 
 def remove_slot(obj_id):
     for idx, oid in enumerate(object_slots):
-        if oid == obj_id:
-            object_slots[idx] = None
+        if oid == obj_id: object_slots[idx] = None
 
-# --- Real-time Processing Loop ---
+def start_cv_tracking(frame, obj_id):
+    global cv_tracker, is_cv_tracking, selected_obj_id
+    box_to_track = None
+    for box in last_known_boxes:
+        if box.id is not None and int(box.id.item()) == obj_id:
+            box_to_track = box
+            break
+    
+    if box_to_track:
+        coords = box_to_track.xyxy[0].tolist()
+        x1, y1, x2, y2 = map(int, coords)
+        h_f, w_f, _ = frame.shape
+        x1, y1 = max(0, x1), max(0, y1)
+        x2, y2 = min(w_f, x2), min(h_f, y2)
+        width, height = x2 - x1, y2 - y1
+
+        if width <= 0 or height <= 0: return
+
+        if CV_TRACKER_TYPE in ['NANOTRACK', 'DASIAMRPN']:
+            shrink = 0.05
+            dw, dh = width * shrink, height * shrink
+            x1, y1 = int(x1 + dw), int(y1 + dh)
+            width, height = int(width - 2 * dw), int(height - 2 * dh)
+            x1, y1 = max(5, min(w_f - 10, x1)), max(5, min(h_f - 10, y1))
+            width, height = max(10, min(w_f - x1 - 5, width)), max(10, min(h_f - y1 - 5, height))
+
+        bbox_cv = (int(x1), int(y1), int(width), int(height))
+        cv_tracker = create_cv_tracker()
+        if not cv_tracker: return
+
+        try:
+            res = cv_tracker.init(frame, bbox_cv)
+            if res is None or res:
+                is_cv_tracking = True
+                selected_obj_id = obj_id
+                print(f"Started {CV_TRACKER_TYPE} tracking for ID: {selected_obj_id}")
+            else:
+                is_cv_tracking = False
+        except Exception as e:
+            print(f"Tracker init error: {e}")
+            is_cv_tracking = False
+
+def stop_cv_tracking():
+    global cv_tracker, is_cv_tracking, selected_obj_id
+    is_cv_tracking, cv_tracker, selected_obj_id = False, None, None
+    print("Stopped CV tracking.")
+
 while True:
-    # Read a frame
     ret, frame = cap.read()
-    if not ret:
-        print("Unable to read frame, exiting.")
-        break
+    if not ret: break
+
+    tracking_frame = frame.copy()
+
+    if tracking_request:
+        if tracking_request['action'] == 'start':
+            start_cv_tracking(tracking_frame, tracking_request['id'])
+        elif tracking_request['action'] == 'stop':
+            stop_cv_tracking()
+        tracking_request = None
+
+    tracker_bbox = None
+    if is_cv_tracking and cv_tracker is not None:
+        ok, bbox = cv_tracker.update(tracking_frame)
+        if ok:
+            tracker_bbox = bbox
+        else:
+            stop_cv_tracking()
 
     now = time.time()
-    # Perform real-time tracking
-    results = model.track(
-        frame,
-        # --- Parameters for Small Object Detection ---
-        conf=args.conf,
-        imgsz=args.imgsz,
-        persist=True,
-        tracker=TRACKER_CONFIG,
-        classes=TARGET_CLASSES if TARGET_CLASSES else None # Filter by class
-    )
+    results = model.track(frame, conf=args.conf, imgsz=args.imgsz, persist=True, tracker=TRACKER_CONFIG, classes=TARGET_CLASSES if TARGET_CLASSES else None, verbose=False)
 
     boxes = results[0].boxes
     names = results[0].names if hasattr(results[0], 'names') else {}
     current_ids = set()
+    last_known_boxes = boxes if boxes is not None and hasattr(boxes, 'id') else []
 
-    # Update object_dict with current detections
     if boxes is not None and hasattr(boxes, 'id'):
-        for i, box in enumerate(boxes):
-            # Get tracking ID
+        for box in boxes:
             obj_id = int(box.id.item()) if box.id is not None else None
             if obj_id is not None:
-                # Get object bounding box coordinates
                 x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
                 crop = frame[y1:y2, x1:x2]
                 if crop.size > 0:
                     crop_resized = cv2.resize(crop, (CROP_SIZE, CROP_SIZE))
-                    # Get class name
-                    cls_id = int(box.cls.item()) if hasattr(box, 'cls') and box.cls is not None else -1
+                    cls_id = int(box.cls.item()) if hasattr(box, 'cls') else -1
                     obj_name = names[cls_id] if cls_id in names else f"ID{obj_id}"
                     if obj_id not in object_dict:
-                        object_dict[obj_id] = {
-                            'crop': crop_resized,
-                            'last_seen': now,
-                            'first_seen': now,
-                            'name': obj_name,
-                            'visible': True
-                        }
+                        object_dict[obj_id] = {'crop': crop_resized, 'last_seen': now, 'first_seen': now, 'name': obj_name, 'visible': True}
                     else:
-                        object_dict[obj_id]['crop'] = crop_resized
-                        object_dict[obj_id]['last_seen'] = now
-                        object_dict[obj_id]['visible'] = True
+                        object_dict[obj_id].update({'crop': crop_resized, 'last_seen': now, 'visible': True})
                     current_ids.add(obj_id)
 
-    # Mark objects not currently visible
-    for obj_id in object_dict:
-        if obj_id not in current_ids:
-            object_dict[obj_id]['visible'] = False
+    for oid in object_dict:
+        if oid not in current_ids: object_dict[oid]['visible'] = False
 
-    # Remove objects that have disappeared for more than REMOVE_DELAY seconds
-    remove_ids = []
-    for obj_id, info in object_dict.items():
-        if not info['visible'] and now - info['last_seen'] > REMOVE_DELAY:
-            remove_ids.append(obj_id)
-    for obj_id in remove_ids:
-        del object_dict[obj_id]
-        remove_slot(obj_id)  # Free the slot
+    remove_ids = [oid for oid, info in object_dict.items() if not info['visible'] and now - info['last_seen'] > REMOVE_DELAY]
+    for oid in remove_ids:
+        del object_dict[oid]
+        remove_slot(oid)
+    
+    if selected_obj_id is not None and selected_obj_id not in object_dict and not is_cv_tracking:
+        selected_obj_id = None
 
-    # Refresh object display window every REFRESH_INTERVAL seconds
     if now - last_panel_update > REFRESH_INTERVAL:
-        # Prepare crops for slots
         slot_crops = [np.zeros((CROP_SIZE+24, CROP_SIZE, 3), dtype=np.uint8) for _ in range(MAX_OBJECTS)]
         for obj_id, info in object_dict.items():
-            # Only show objects that have been visible for at least APPEAR_THRESHOLD seconds
             if now - info['first_seen'] >= APPEAR_THRESHOLD:
                 slot_idx = assign_slot(obj_id)
                 if slot_idx is not None:
-                    # Draw label (object name + ID) above the crop
                     label_img = np.zeros((24, CROP_SIZE, 3), dtype=np.uint8)
-                    text = f"{info['name']} (ID:{obj_id})"
-                    cv2.putText(label_img, text, (5, 18), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,255,255), 1, cv2.LINE_AA)
+                    cv2.putText(label_img, f"ID:{obj_id}", (2, 18), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0,255,255), 1)
                     crop_with_label = np.vstack([label_img, info['crop']])
-                    # Draw colored rectangle around the crop
-                    color = (0, 255, 0) if info['visible'] else (0, 165, 255)  # Green or Orange
+                    color = (0, 255, 0) if info['visible'] else (0, 165, 255)
                     cv2.rectangle(crop_with_label, (0, 24), (CROP_SIZE-1, CROP_SIZE+23), color, 2)
+                    if obj_id == selected_obj_id:
+                        if is_cv_tracking: cv2.rectangle(crop_with_label, (0, 24), (CROP_SIZE-1, CROP_SIZE+23), (255, 0, 0), 2)
+                        else: draw_dashed_rectangle(crop_with_label, (0, 24), (CROP_SIZE-1, CROP_SIZE+23), (0, 255, 255), 2, 5)
                     slot_crops[slot_idx] = crop_with_label
-        # Arrange crops in grid
-        rows = []
-        for i in range(0, MAX_OBJECTS, OBJECTS_PER_ROW):
-            row_crops = slot_crops[i:i+OBJECTS_PER_ROW]
-            rows.append(np.hstack(row_crops))
-        objects_panel = np.vstack(rows)
-        cv2.imshow("Objects", objects_panel)
+        rows = [np.hstack(slot_crops[i:i+OBJECTS_PER_ROW]) for i in range(0, MAX_OBJECTS, OBJECTS_PER_ROW)]
+        cv2.imshow(objects_window_name, np.vstack(rows))
         last_panel_update = now
 
-    # Show annotated frame as usual
     annotated_frame = results[0].plot()
-    cv2.imshow(f"YOLO Real-Time Tracking [{MODEL_NAME}] (Press 'q' to exit)", annotated_frame)
 
-    # Check if 'q' key is pressed to exit
-    if cv2.waitKey(1) & 0xFF == ord('q'):
-        break
+    if tracker_bbox is not None:
+        p1 = (int(tracker_bbox[0]), int(tracker_bbox[1]))
+        p2 = (int(tracker_bbox[0] + tracker_bbox[2]), int(tracker_bbox[1] + tracker_bbox[3]))
+        cv2.rectangle(annotated_frame, p1, p2, (255, 0, 0), 2)
+        cv2.putText(annotated_frame, f"{CV_TRACKER_TYPE} ID: {selected_obj_id}", (p1[0], p1[1] - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
 
-# --- Cleanup Resources ---
+    if selected_obj_id is not None and not is_cv_tracking:
+        for box in last_known_boxes:
+            if box.id is not None and int(box.id.item()) == selected_obj_id:
+                x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
+                draw_dashed_rectangle(annotated_frame, (x1, y1), (x2, y2), (0, 255, 255), 2)
+                break
+    cv2.imshow(main_window_name, annotated_frame)
+    if cv2.waitKey(1) & 0xFF == ord('q'): break
+
 cap.release()
 cv2.destroyAllWindows()
 print("Experiment finished.")
