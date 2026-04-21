@@ -94,6 +94,14 @@ DASIAMRPN_KERNEL_R1 = "dasiamrpn_kernel_r1.onnx"
 
 tracking_request = None # To handle requests from the mouse callback
 
+# --- Manual Drawing & Mode UI State ---
+app_mode = 'YOLO'  # 'YOLO' or 'MANUAL'
+is_drawing = False
+drawing_start = None
+drawing_current = None
+BTN_YOLO = (10, 10, 160, 45)    # (x1, y1, x2, y2)
+BTN_MANUAL = (170, 10, 330, 45) # (x1, y1, x2, y2)
+
 
 def scan_camera_modes(camera_source):
     print(f"\nScanning supported modes for Camera {camera_source}...")
@@ -239,33 +247,69 @@ def create_cv_tracker():
 
 # --- Mouse Callback for Object Selection ---
 def select_object_callback(event, x, y, flags, param):
-    global selected_obj_id, tracking_request
+    global selected_obj_id, tracking_request, app_mode, is_drawing, drawing_start, drawing_current
     window_name = param['name']
 
-    if event == cv2.EVENT_LBUTTONDOWN:
-        found_id = None
-        if window_name == objects_window_name:
-            col = x // CROP_SIZE
-            row = y // (CROP_SIZE + 24)
-            slot_idx = row * OBJECTS_PER_ROW + col
-            if 0 <= slot_idx < len(object_slots):
-                found_id = object_slots[slot_idx]
-        else:
-            for box in last_known_boxes:
-                x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
-                if x1 <= x <= x2 and y1 <= y <= y2:
-                    found_id = int(box.id.item())
-                    break
-        
-        if found_id is not None:
-            if selected_obj_id == found_id:
-                selected_obj_id = None
-                tracking_request = {'action': 'stop'}
-            else:
-                selected_obj_id = found_id
-                tracking_request = {'action': 'start', 'id': found_id}
-        elif is_cv_tracking:
+    # Handle Mode UI Clicks
+    if event == cv2.EVENT_LBUTTONDOWN and window_name == main_window_name:
+        if BTN_YOLO[0] <= x <= BTN_YOLO[2] and BTN_YOLO[1] <= y <= BTN_YOLO[3]:
+            app_mode = 'YOLO'
             tracking_request = {'action': 'stop'}
+            selected_obj_id = None
+            is_drawing = False
+            return
+        elif BTN_MANUAL[0] <= x <= BTN_MANUAL[2] and BTN_MANUAL[1] <= y <= BTN_MANUAL[3]:
+            app_mode = 'MANUAL'
+            tracking_request = {'action': 'stop'}
+            selected_obj_id = None
+            return
+
+    if app_mode == 'YOLO':
+        if event == cv2.EVENT_LBUTTONDOWN:
+            found_id = None
+            if window_name == objects_window_name:
+                col = x // CROP_SIZE
+                row = y // (CROP_SIZE + 24)
+                slot_idx = row * OBJECTS_PER_ROW + col
+                if 0 <= slot_idx < len(object_slots):
+                    found_id = object_slots[slot_idx]
+            else:
+                for box in last_known_boxes:
+                    x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
+                    if x1 <= x <= x2 and y1 <= y <= y2:
+                        found_id = int(box.id.item())
+                        break
+            
+            if found_id is not None:
+                if selected_obj_id == found_id:
+                    selected_obj_id = None
+                    tracking_request = {'action': 'stop'}
+                else:
+                    selected_obj_id = found_id
+                    tracking_request = {'action': 'start', 'id': found_id}
+            elif is_cv_tracking:
+                tracking_request = {'action': 'stop'}
+    elif app_mode == 'MANUAL':
+        if window_name == main_window_name:
+            if event == cv2.EVENT_LBUTTONDOWN:
+                is_drawing = True
+                drawing_start = (x, y)
+                drawing_current = (x, y)
+            elif event == cv2.EVENT_MOUSEMOVE:
+                if is_drawing:
+                    drawing_current = (x, y)
+            elif event == cv2.EVENT_LBUTTONUP:
+                if is_drawing:
+                    is_drawing = False
+                    drawing_current = (x, y)
+                    x1, y1 = drawing_start
+                    x2, y2 = drawing_current
+                    x_min, x_max = min(x1, x2), max(x1, x2)
+                    y_min, y_max = min(y1, y2), max(y1, y2)
+                    if x_max - x_min > 5 and y_max - y_min > 5:
+                        tracking_request = {'action': 'start_manual', 'bbox': [x_min, y_min, x_max - x_min, y_max - y_min]}
+                    else:
+                        tracking_request = {'action': 'stop'}
 
 def draw_dashed_rectangle(img, pt1, pt2, color, thickness=1, dash_length=10):
     x1, y1 = pt1
@@ -349,6 +393,24 @@ def stop_cv_tracking():
     is_cv_tracking, cv_tracker, selected_obj_id = False, None, None
     print("Stopped CV tracking.")
 
+def start_manual_cv_tracking(frame, bbox):
+    global cv_tracker, is_cv_tracking, selected_obj_id
+    
+    cv_tracker = create_cv_tracker()
+    if not cv_tracker: return
+
+    try:
+        res = cv_tracker.init(frame, tuple(bbox))
+        if res is None or res:
+            is_cv_tracking = True
+            selected_obj_id = 'Manual'
+            print(f"Started {CV_TRACKER_TYPE} tracking for Manual selection")
+        else:
+            is_cv_tracking = False
+    except Exception as e:
+        print(f"Tracker init error: {e}")
+        is_cv_tracking = False
+
 last_det_time = 0.0
 last_track_time = 0.0
 last_results = None
@@ -364,6 +426,9 @@ while True:
     if tracking_request:
         if tracking_request['action'] == 'start':
             start_cv_tracking(tracking_frame, tracking_request['id'])
+            last_tracker_bbox = None
+        elif tracking_request['action'] == 'start_manual':
+            start_manual_cv_tracking(tracking_frame, tracking_request['bbox'])
             last_tracker_bbox = None
         elif tracking_request['action'] == 'stop':
             stop_cv_tracking()
@@ -416,8 +481,9 @@ while True:
         del object_dict[oid]
         remove_slot(oid)
     
-    if selected_obj_id is not None and selected_obj_id not in object_dict and not is_cv_tracking:
-        selected_obj_id = None
+    if selected_obj_id is not None and not is_cv_tracking and isinstance(selected_obj_id, int):
+        if selected_obj_id not in object_dict:
+            selected_obj_id = None
 
     if now - last_panel_update > REFRESH_INTERVAL:
         slot_crops = [np.zeros((CROP_SIZE+24, CROP_SIZE, 3), dtype=np.uint8) for _ in range(MAX_OBJECTS)]
@@ -443,13 +509,26 @@ while True:
         last_results[0].orig_img = annotated_frame
         annotated_frame = last_results[0].plot()
 
+    # Draw UI Buttons
+    yolo_color = (0, 255, 0) if app_mode == 'YOLO' else (150, 150, 150)
+    cv2.rectangle(annotated_frame, (BTN_YOLO[0], BTN_YOLO[1]), (BTN_YOLO[2], BTN_YOLO[3]), yolo_color, -1 if app_mode == 'YOLO' else 2)
+    cv2.putText(annotated_frame, "YOLO Mode", (BTN_YOLO[0] + 20, BTN_YOLO[1] + 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0) if app_mode == 'YOLO' else yolo_color, 2)
+
+    manual_color = (0, 165, 255) if app_mode == 'MANUAL' else (150, 150, 150)
+    cv2.rectangle(annotated_frame, (BTN_MANUAL[0], BTN_MANUAL[1]), (BTN_MANUAL[2], BTN_MANUAL[3]), manual_color, -1 if app_mode == 'MANUAL' else 2)
+    cv2.putText(annotated_frame, "Manual Mode", (BTN_MANUAL[0] + 15, BTN_MANUAL[1] + 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0) if app_mode == 'MANUAL' else manual_color, 2)
+
+    # Draw manual drawing rectangle
+    if is_drawing and drawing_start and drawing_current:
+        cv2.rectangle(annotated_frame, drawing_start, drawing_current, (255, 255, 0), 2)
+
     if tracker_bbox is not None:
         p1 = (int(tracker_bbox[0]), int(tracker_bbox[1]))
         p2 = (int(tracker_bbox[0] + tracker_bbox[2]), int(tracker_bbox[1] + tracker_bbox[3]))
         cv2.rectangle(annotated_frame, p1, p2, (255, 0, 0), 2)
         cv2.putText(annotated_frame, f"{CV_TRACKER_TYPE} ID: {selected_obj_id}", (p1[0], p1[1] - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
 
-    if selected_obj_id is not None and not is_cv_tracking:
+    if selected_obj_id is not None and not is_cv_tracking and isinstance(selected_obj_id, int):
         for box in last_known_boxes:
             if box.id is not None and int(box.id.item()) == selected_obj_id:
                 x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
