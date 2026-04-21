@@ -19,6 +19,7 @@ This project provides real-time object detection and tracking demonstrations in 
 ```plaintext
 ├── python/
 │   ├── objdet.py              # Main Python detection and tracking script
+│   ├── tracking_example.py    # Simplified OpenCV-only tracking example
 │   ├── bytetrack.yaml         # Tracker configuration for Python script
 │   └── yolov8n.pt             # YOLOv8 nano model (default)
 │
@@ -75,6 +76,29 @@ The Python version uses the powerful `ultralytics` library to handle both detect
 3.  **Controls**
     - **Click** on a bounding box in the main window or an object in the "Objects" window to start dedicated OpenCV tracking (e.g., DaSiamRPN, NanoTrack, CSRT) for that object. Click again to stop.
     - Press `q` in the preview window to exit.
+
+### Simple Tracking Example (`tracking_example.py`)
+
+This project includes a standalone script focusing purely on OpenCV's tracking algorithms, without the YOLO detection overhead.
+
+1.  **Run the script**
+    ```bash
+    cd python
+    python tracking_example.py
+    ```
+
+    You can also specify the tracking algorithm using the `--tracker` argument:
+    ```bash
+    python tracking_example.py --tracker NANOTRACK
+    ```
+    *(Supported trackers: `DASIAMRPN`, `NANOTRACK`, `CSRT`, `KCF`, `MIL`, `MOSSE`, `TLD`, `MEDIANFLOW`. Default is `CSRT`)*
+
+2.  **Usage**
+    - The camera feed will open.
+    - Drag to draw a bounding box around the object you want to track.
+    - Press **ENTER** or **SPACE** to confirm the selection and start tracking.
+    - Press **c** to cancel the selection.
+    - Press `q` to exit the application.
 
 ### Configuration
 

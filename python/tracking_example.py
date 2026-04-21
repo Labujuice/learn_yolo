@@ -1,26 +1,78 @@
 import cv2
 import sys
+import argparse
 
 # --- 設定 ---
-# 選擇一個追蹤器，取消註解你想使用的那一行
-# tracker_type = 'CSRT'      # 推薦，準確率高
-# tracker_type = 'KCF'       # 速度與準確率平衡
-tracker_type = 'MIL'     # 速度極快
+parser = argparse.ArgumentParser(description="OpenCV Tracking Example")
+parser.add_argument(
+    '--tracker', 
+    type=str, 
+    default='CSRT', 
+    help="選擇要使用的追蹤演算法模型。支援的選項包含：DASIAMRPN, NANOTRACK, CSRT, KCF, MIL, MOSSE 等。預設為 CSRT。"
+)
+args = parser.parse_args()
+tracker_type = args.tracker.upper()
+
+# Tracker Model Paths
+NANOTRACK_BACKBONE = "nanotrack_backbone.onnx"
+NANOTRACK_HEAD = "nanotrack_head.onnx"
+
+# DaSiamRPN requires THREE files
+DASIAMRPN_MODEL = "dasiamrpn_model.onnx"
+DASIAMRPN_KERNEL_CLS1 = "dasiamrpn_kernel_cls1.onnx"
+DASIAMRPN_KERNEL_R1 = "dasiamrpn_kernel_r1.onnx"
 
 def create_tracker(tracker_type):
     """Creates a tracker based on the specified type, with error handling."""
+    if tracker_type == 'DASIAMRPN':
+        try:
+            import os
+            required_files = [DASIAMRPN_MODEL, DASIAMRPN_KERNEL_CLS1, DASIAMRPN_KERNEL_R1]
+            if any(not os.path.exists(f) for f in required_files):
+                print(f"\nError: DaSiamRPN models missing! Please ensure all 3 files are in the python/ directory.")
+                return None
+            params = cv2.TrackerDaSiamRPN_Params()
+            params.model = DASIAMRPN_MODEL
+            params.kernel_cls1 = DASIAMRPN_KERNEL_CLS1
+            params.kernel_r1 = DASIAMRPN_KERNEL_R1
+            params.backend = cv2.dnn.DNN_BACKEND_OPENCV
+            params.target = cv2.dnn.DNN_TARGET_CPU
+            return cv2.TrackerDaSiamRPN_create(params)
+        except Exception as e:
+            print(f"Error creating DaSiamRPN: {e}")
+            return None
+
+    if tracker_type == 'NANOTRACK':
+        try:
+            import os
+            if not os.path.exists(NANOTRACK_BACKBONE) or not os.path.exists(NANOTRACK_HEAD):
+                print(f"\nError: NanoTrack models not found!")
+                return None
+            params = cv2.TrackerNano_Params()
+            params.backbone = NANOTRACK_BACKBONE
+            params.neckhead = NANOTRACK_HEAD
+            params.backend = cv2.dnn.DNN_BACKEND_OPENCV
+            params.target = cv2.dnn.DNN_TARGET_CPU
+            return cv2.TrackerNano_create(params)
+        except Exception as e:
+            print(f"Error creating NanoTrack: {e}")
+            return None
+
+    tracker_builders = {
+        'CSRT': cv2.legacy.TrackerCSRT.create,
+        'KCF': cv2.legacy.TrackerKCF.create,
+        'MIL': cv2.legacy.TrackerMIL.create,
+        'MOSSE': cv2.legacy.TrackerMOSSE.create,
+        'MEDIANFLOW': cv2.legacy.TrackerMedianFlow.create,
+        'TLD': cv2.legacy.TrackerTLD.create,
+    }
     try:
-        if tracker_type == 'CSRT':
-            return cv2.TrackerCSRT_create()
-        if tracker_type == 'KCF':
-            return cv2.TrackerKCF_create()
-        if tracker_type == 'MOSSE':
-            return cv2.TrackerMOSSE_create()
-        if tracker_type == 'MIL':
-            return cv2.TrackerMIL_create()
-        # ... 其他追蹤器
-        print(f"錯誤：無效的追蹤器類型 '{tracker_type}'")
-        return None
+        builder = tracker_builders.get(tracker_type)
+        if builder:
+            return builder()
+        else:
+            print(f"錯誤：無效的追蹤器類型 '{tracker_type}'")
+            return None
     except AttributeError:
         print("\n錯誤：您的 OpenCV 版本缺少追蹤器模組 (AttributeError)。")
         print("這通常是因為未安裝 'contrib' 版本的 OpenCV。")
@@ -50,14 +102,17 @@ if __name__ == '__main__':
 
     # 讓使用者手動選擇要追蹤的物件 (ROI: Region of Interest)
     # 按下 Enter 或 Space 確認選取，按下 C 取消
-    bbox = cv2.selectROI("Select Object to Track", frame, False)
+    display_frame = frame.copy()
+    cv2.putText(display_frame, "Select object and press ENTER to start tracking", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+    bbox = cv2.selectROI("Select Object to Track", display_frame, False)
     
     if not bbox or bbox[2] == 0 or bbox[3] == 0:
         print("未選取物件，程式結束。")
         sys.exit()
 
     # 初始化追蹤器
-    ok = tracker.init(frame, bbox)
+    res = tracker.init(frame, bbox)
+    ok = res is None or res
     cv2.destroyWindow("Select Object to Track")
 
     while True:
