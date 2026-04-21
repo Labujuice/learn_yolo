@@ -4,8 +4,9 @@ This project provides real-time object detection and tracking demonstrations in 
 
 ## Features
 
-- **Python**: Real-time object detection and tracking using the `ultralytics` library.
+- **Python**: Real-time object detection and multi-object tracking using the `ultralytics` library, combined with robust single-object tracking (DaSiamRPN, NanoTrack, CSRT, etc.) using OpenCV.
 - **C++**: Real-time object detection using OpenCV's DNN module with an ONNX model. (Note: Tracking is simplified and does not persist IDs across frames).
+- **Interactive Single-Object Tracking**: Click on any detected object's bounding box to lock onto it with OpenCV's dedicated trackers.
 - Object browsing window: Shows cropped images of detected objects, arranged in a grid.
 - Each object is displayed only after being continuously detected for a set threshold (default: 1s).
 - Objects remain in the browsing window for a set delay after disappearing (default: 3s).
@@ -72,6 +73,7 @@ The Python version uses the powerful `ultralytics` library to handle both detect
         ```
 
 3.  **Controls**
+    - **Click** on a bounding box in the main window or an object in the "Objects" window to start dedicated OpenCV tracking (e.g., DaSiamRPN, NanoTrack, CSRT) for that object. Click again to stop.
     - Press `q` in the preview window to exit.
 
 ### Configuration
@@ -88,6 +90,7 @@ You can configure the script at runtime using the following command-line argumen
 
 - `MODEL_NAME`: Default model file name (e.g., `'yolov8n.pt'`).
 - `TRACKER_CONFIG`: Tracker configuration file (e.g., `'bytetrack.yaml'`).
+- `CV_TRACKER_TYPE`: The algorithm used for the single-object tracking on click. Options include `'DASIAMRPN'`, `'NANOTRACK'`, `'CSRT'`, `'KCF'`, `'MIL'`.
 - `APPEAR_THRESHOLD`: Seconds an object must be detected before display (default: 1).
 - `REMOVE_DELAY`: Seconds after disappearance before removing from display (default: 3).
 - `OBJECTS_PER_ROW`: Number of objects per row in the browsing window.
@@ -137,4 +140,5 @@ The C++ version uses OpenCV's DNN module to run a YOLO ONNX model. It offers hig
 
 ## License
 
-This project is for educational and research purposes. Please respect the licenses of the libraries and models used.
+This project is licensed under the **GNU Affero General Public License v3.0 (AGPL-3.0)**. 
+Please respect the licenses of the third-party libraries and models used (e.g., Ultralytics YOLO, OpenCV, SiamTrackers).
