@@ -82,6 +82,7 @@ last_known_boxes = [] # To store the latest bounding boxes for click detection
 cv_tracker = None
 is_cv_tracking = False
 CV_TRACKER_TYPE = 'NANOTRACK' # Options: 'DASIAMRPN', 'NANOTRACK', 'CSRT', 'KCF', 'MIL'
+use_bg_tracking = True # Toggle for integrated tracking on background objects
 
 def get_color(idx):
     """Returns a consistent color for a given ID."""
@@ -122,6 +123,7 @@ TRACKER_BTNS = {
     'KCF': (390, 30, 440, 50),
     'MIL': (450, 30, 500, 50)
 }
+BG_TRACK_TOGGLE_BTN = (10, 55, 230, 75)
 
 # Performance tracking variables
 det_calc_time = 0.0
@@ -276,7 +278,7 @@ def create_cv_tracker():
 
 # --- Mouse Callback for Object Selection ---
 def select_object_callback(event, x, y, flags, param):
-    global selected_obj_id, tracking_request, app_mode, is_drawing, drawing_start, drawing_current, CV_TRACKER_TYPE
+    global selected_obj_id, tracking_request, app_mode, is_drawing, drawing_start, drawing_current, CV_TRACKER_TYPE, use_bg_tracking
     window_name = param['name']
 
     # Handle Mode UI Clicks
@@ -292,6 +294,11 @@ def select_object_callback(event, x, y, flags, param):
                     app_mode = 'MANUAL'
                     tracking_request = {'action': 'stop'}
                     selected_obj_id = None
+                elif BG_TRACK_TOGGLE_BTN[0] <= x <= BG_TRACK_TOGGLE_BTN[2] and BG_TRACK_TOGGLE_BTN[1] <= y <= BG_TRACK_TOGGLE_BTN[3]:
+                    use_bg_tracking = not use_bg_tracking
+                    # If turning OFF, clear existing background trackers
+                    if not use_bg_tracking:
+                        for info in object_dict.values(): info['tracker'] = None
                 else:
                     for tracker_name, coords in TRACKER_BTNS.items():
                         if coords[0] <= x <= coords[2] and coords[1] <= y <= coords[3]:
@@ -535,18 +542,17 @@ while True:
                         cls_id = int(box.cls.item()) if hasattr(box, 'cls') else -1
                         obj_name = names[cls_id] if cls_id in names else f"ID{obj_id}"
                         
-                        # Initialize or Re-sync Feature Tracker with Ground Truth
-                        if obj_id not in object_dict or object_dict[obj_id].get('tracker') is None:
-                            new_tracker = create_cv_tracker()
-                            if new_tracker:
-                                new_tracker.init(frame, bbox_cv)
-                                tracker_to_save = new_tracker
+                        # Initialize or Re-sync Feature Tracker ONLY if BG tracking is enabled
+                        tracker_to_save = None
+                        if use_bg_tracking:
+                            if obj_id not in object_dict or object_dict[obj_id].get('tracker') is None:
+                                new_tracker = create_cv_tracker()
+                                if new_tracker:
+                                    new_tracker.init(frame, bbox_cv)
+                                    tracker_to_save = new_tracker
                             else:
-                                tracker_to_save = None
-                        else:
-                            # Correct the tracker's position using YOLO's result
-                            object_dict[obj_id]['tracker'].init(frame, bbox_cv)
-                            tracker_to_save = object_dict[obj_id]['tracker']
+                                object_dict[obj_id]['tracker'].init(frame, bbox_cv)
+                                tracker_to_save = object_dict[obj_id]['tracker']
 
                         if obj_id not in object_dict:
                             object_dict[obj_id] = {'crop': crop_resized, 'last_seen': now, 'first_seen': now, 'name': obj_name, 'visible': True, 'tracker': tracker_to_save, 'bbox': bbox_cv}
@@ -593,8 +599,10 @@ while True:
     for obj_id, info in object_dict.items():
         if info.get('visible', False) and 'bbox' in info:
             x, y, w, h = map(int, info['bbox'])
-            color = get_color(obj_id)
-            cv2.rectangle(annotated_frame, (x, y), (x + w, y + h), color, 2)
+            is_sel = (obj_id == selected_obj_id)
+            color = (255, 0, 0) if is_sel else get_color(obj_id)
+            thick = 4 if is_sel else 2 # 選中加粗
+            cv2.rectangle(annotated_frame, (x, y), (x + w, y + h), color, thick)
             label = f"ID:{obj_id} {info['name']}"
             cv2.putText(annotated_frame, label, (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
 
@@ -610,6 +618,11 @@ while True:
     manual_color = (0, 165, 255) if app_mode == 'MANUAL' else (150, 150, 150)
     cv2.rectangle(ui_panel, (MODE_BTNS['MANUAL'][0], MODE_BTNS['MANUAL'][1]), (MODE_BTNS['MANUAL'][2], MODE_BTNS['MANUAL'][3]), manual_color, -1 if app_mode == 'MANUAL' else 2)
     cv2.putText(ui_panel, "Manual", (MODE_BTNS['MANUAL'][0] + 15, MODE_BTNS['MANUAL'][1] + 17), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0) if app_mode == 'MANUAL' else manual_color, 2)
+
+    # BG Tracking Toggle Button
+    bg_track_color = (0, 255, 0) if use_bg_tracking else (0, 0, 255)
+    cv2.rectangle(ui_panel, (BG_TRACK_TOGGLE_BTN[0], BG_TRACK_TOGGLE_BTN[1]), (BG_TRACK_TOGGLE_BTN[2], BG_TRACK_TOGGLE_BTN[3]), bg_track_color, 2)
+    cv2.putText(ui_panel, f"BG Track: {'ON' if use_bg_tracking else 'OFF'}", (BG_TRACK_TOGGLE_BTN[0] + 10, BG_TRACK_TOGGLE_BTN[1] + 15), cv2.FONT_HERSHEY_SIMPLEX, 0.5, bg_track_color, 1)
 
     cv2.putText(ui_panel, "Mode:", (10, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
     cv2.putText(ui_panel, "Tracker:", (10, 47), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
@@ -642,10 +655,11 @@ while True:
 
     # Selection Highlight (Legacy/Manual Selection)
     if tracker_bbox is not None:
-        p1 = (int(tracker_bbox[0]), int(tracker_bbox[1]) + UI_HEIGHT)
-        p2 = (int(tracker_bbox[0] + tracker_bbox[2]), int(tracker_bbox[1] + tracker_bbox[3]) + UI_HEIGHT)
-        cv2.rectangle(final_frame, p1, p2, (255, 0, 0), 2)
-        cv2.putText(final_frame, f"SELECT ID: {selected_obj_id}", (p1[0], p1[1] - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
+        x, y, w, h = map(int, tracker_bbox)
+        p1 = (x, y + UI_HEIGHT)
+        p2 = (x + w, y + UI_HEIGHT)
+        cv2.rectangle(final_frame, p1, (x + w, y + h + UI_HEIGHT), (255, 0, 0), 4) # 藍/紅加粗
+        cv2.putText(final_frame, f"SELECT: {selected_obj_id}", (p1[0], p1[1] - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
 
     cv2.imshow(main_window_name, final_frame)
     if cv2.waitKey(1) & 0xFF == ord('q'): break
