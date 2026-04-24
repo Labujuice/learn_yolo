@@ -72,7 +72,7 @@ REMOVE_DELAY = 3        # Seconds after disappearance before removing from displ
 REFRESH_INTERVAL = 0.2  # Refresh object window every few seconds
 OBJECTS_PER_ROW = 8   # Number of objects per row
 
-# Track each obj_id: {'crop': ..., 'last_seen': ..., 'first_seen': ..., 'name': ..., 'visible': ...}
+# Track each obj_id: {'crop': ..., 'last_seen': ..., 'first_seen': ..., 'name': ..., 'visible': ..., 'tracker': ..., 'bbox': ...}
 object_dict = {}
 last_panel_update = time.time()
 
@@ -82,6 +82,16 @@ last_known_boxes = [] # To store the latest bounding boxes for click detection
 cv_tracker = None
 is_cv_tracking = False
 CV_TRACKER_TYPE = 'NANOTRACK' # Options: 'DASIAMRPN', 'NANOTRACK', 'CSRT', 'KCF', 'MIL'
+
+def get_color(idx):
+    """Returns a consistent color for a given ID."""
+    colors = [
+        (255, 0, 0), (0, 255, 0), (0, 0, 255), 
+        (255, 255, 0), (255, 0, 255), (0, 255, 255),
+        (255, 128, 0), (255, 0, 128), (128, 255, 0),
+        (0, 255, 128), (128, 0, 255), (0, 128, 255)
+    ]
+    return colors[int(idx) % len(colors)]
 
 # Tracker Model Paths
 NANOTRACK_BACKBONE = "nanotrack_backbone.onnx"
@@ -451,40 +461,55 @@ while True:
     if not ret: break
 
     now = time.time()
-    tracking_frame = frame.copy()
 
+    # --- 1. Global Tracking Request Handling (Mouse) ---
     if tracking_request:
         if tracking_request['action'] == 'start':
-            start_cv_tracking(tracking_frame, tracking_request['id'])
+            start_cv_tracking(frame, tracking_request['id'])
             last_tracker_bbox = None
         elif tracking_request['action'] == 'start_manual':
-            start_manual_cv_tracking(tracking_frame, tracking_request['bbox'])
+            start_manual_cv_tracking(frame, tracking_request['bbox'])
             last_tracker_bbox = None
         elif tracking_request['action'] == 'stop':
             stop_cv_tracking()
             last_tracker_bbox = None
         tracking_request = None
 
-    if is_cv_tracking and cv_tracker is not None:
-        if track_interval == 0.0 or (now - last_track_time) >= track_interval:
-            t_start = time.time()
-            ok, bbox = cv_tracker.update(tracking_frame)
-            track_calc_time = (time.time() - t_start) * 1000
-            track_actual_fps = 1.0 / (now - last_track_exec_time) if (now - last_track_exec_time) > 0 else 0
-            last_track_exec_time = now
+    # --- 2. Feature Tracking for ALL objects (Multi-Object) ---
+    if track_interval == 0.0 or (now - last_track_time) >= track_interval:
+        t_track_start = time.time()
+        
+        # Update each object's tracker in the background dictionary
+        for obj_id, info in object_dict.items():
+            if info.get('tracker') is not None and info.get('visible', False):
+                ok, bbox = info['tracker'].update(frame)
+                if ok:
+                    info['bbox'] = bbox
+                else:
+                    # Tracker failed, wait for next YOLO detection to re-init
+                    pass
+
+        # Also update the selected tracker if in Manual or specific ID mode
+        if is_cv_tracking and cv_tracker is not None:
+            ok, bbox = cv_tracker.update(frame)
             if ok:
                 last_tracker_bbox = bbox
             else:
                 stop_cv_tracking()
                 last_tracker_bbox = None
-            last_track_time = now
+
+        track_calc_time = (time.time() - t_track_start) * 1000
+        track_actual_fps = 1.0 / (now - last_track_exec_time) if (now - last_track_exec_time) > 0 else 0
+        last_track_exec_time = now
+        last_track_time = now
 
     tracker_bbox = last_tracker_bbox
 
+    # --- 3. YOLO Detection (Low Frequency Correction) ---
     if det_interval == 0.0 or (now - last_det_time) >= det_interval:
-        t_start = time.time()
+        t_det_start = time.time()
         results = model.track(frame, conf=args.conf, imgsz=args.imgsz, persist=True, tracker=TRACKER_CONFIG, classes=TARGET_CLASSES if TARGET_CLASSES else None, verbose=False)
-        det_calc_time = (time.time() - t_start) * 1000
+        det_calc_time = (time.time() - t_det_start) * 1000
         det_actual_fps = 1.0 / (now - last_det_exec_time) if (now - last_det_exec_time) > 0 else 0
         last_det_exec_time = now
         last_results = results
@@ -500,20 +525,36 @@ while True:
                 obj_id = int(box.id.item()) if box.id is not None else None
                 if obj_id is not None:
                     x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
+                    bbox_cv = (x1, y1, x2 - x1, y2 - y1)
                     crop = frame[y1:y2, x1:x2]
                     if crop.size > 0:
                         crop_resized = cv2.resize(crop, (CROP_SIZE, CROP_SIZE))
                         cls_id = int(box.cls.item()) if hasattr(box, 'cls') else -1
                         obj_name = names[cls_id] if cls_id in names else f"ID{obj_id}"
-                        if obj_id not in object_dict:
-                            object_dict[obj_id] = {'crop': crop_resized, 'last_seen': now, 'first_seen': now, 'name': obj_name, 'visible': True}
+                        
+                        # Initialize or Re-sync Feature Tracker with Ground Truth
+                        if obj_id not in object_dict or object_dict[obj_id].get('tracker') is None:
+                            new_tracker = create_cv_tracker()
+                            if new_tracker:
+                                new_tracker.init(frame, bbox_cv)
+                                tracker_to_save = new_tracker
+                            else:
+                                tracker_to_save = None
                         else:
-                            object_dict[obj_id].update({'crop': crop_resized, 'last_seen': now, 'visible': True})
+                            # Correct the tracker's position using YOLO's result
+                            object_dict[obj_id]['tracker'].init(frame, bbox_cv)
+                            tracker_to_save = object_dict[obj_id]['tracker']
+
+                        if obj_id not in object_dict:
+                            object_dict[obj_id] = {'crop': crop_resized, 'last_seen': now, 'first_seen': now, 'name': obj_name, 'visible': True, 'tracker': tracker_to_save, 'bbox': bbox_cv}
+                        else:
+                            object_dict[obj_id].update({'crop': crop_resized, 'last_seen': now, 'visible': True, 'tracker': tracker_to_save, 'bbox': bbox_cv})
                         current_ids.add(obj_id)
 
         for oid in object_dict:
             if oid not in current_ids: object_dict[oid]['visible'] = False
 
+    # --- 4. Cleanup and Display Update ---
     remove_ids = [oid for oid, info in object_dict.items() if not info['visible'] and now - info['last_seen'] > REMOVE_DELAY]
     for oid in remove_ids:
         del object_dict[oid]
@@ -542,16 +583,23 @@ while True:
         cv2.imshow(objects_window_name, np.vstack(rows))
         last_panel_update = now
 
+    # Use single frame for UI
     annotated_frame = frame.copy()
-    if last_results is not None:
-        last_results[0].orig_img = annotated_frame
-        annotated_frame = last_results[0].plot()
+    
+    # Draw all tracked objects for smooth high-frequency visualization
+    for obj_id, info in object_dict.items():
+        if info.get('visible', False) and 'bbox' in info:
+            x, y, w, h = map(int, info['bbox'])
+            color = get_color(obj_id)
+            cv2.rectangle(annotated_frame, (x, y), (x + w, y + h), color, 2)
+            label = f"ID:{obj_id} {info['name']}"
+            cv2.putText(annotated_frame, label, (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
 
     # Create UI Panel
     frame_h, frame_w = annotated_frame.shape[:2]
     ui_panel = np.zeros((UI_HEIGHT, frame_w, 3), dtype=np.uint8)
 
-    # Draw Mode Buttons
+    # Draw UI labels and buttons
     yolo_color = (0, 255, 0) if app_mode == 'YOLO' else (150, 150, 150)
     cv2.rectangle(ui_panel, (MODE_BTNS['YOLO'][0], MODE_BTNS['YOLO'][1]), (MODE_BTNS['YOLO'][2], MODE_BTNS['YOLO'][3]), yolo_color, -1 if app_mode == 'YOLO' else 2)
     cv2.putText(ui_panel, "YOLO", (MODE_BTNS['YOLO'][0] + 15, MODE_BTNS['YOLO'][1] + 17), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0) if app_mode == 'YOLO' else yolo_color, 2)
@@ -579,27 +627,15 @@ while True:
     cv2.putText(ui_panel, det_info, (130, perf_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
     cv2.putText(ui_panel, trk_info, (330, perf_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 165, 255), 1)
 
-    # Combine UI panel and annotated frame
     final_frame = np.vstack((ui_panel, annotated_frame))
 
-    # Draw manual drawing rectangle (adjusted for UI_HEIGHT)
-    if is_drawing and drawing_start and drawing_current:
-        p1 = (drawing_start[0], drawing_start[1] + UI_HEIGHT)
-        p2 = (drawing_current[0], drawing_current[1] + UI_HEIGHT)
-        cv2.rectangle(final_frame, p1, p2, (255, 255, 0), 2)
-
+    # Selection Highlight
     if tracker_bbox is not None:
         p1 = (int(tracker_bbox[0]), int(tracker_bbox[1]) + UI_HEIGHT)
         p2 = (int(tracker_bbox[0] + tracker_bbox[2]), int(tracker_bbox[1] + tracker_bbox[3]) + UI_HEIGHT)
         cv2.rectangle(final_frame, p1, p2, (255, 0, 0), 2)
-        cv2.putText(final_frame, f"{CV_TRACKER_TYPE} ID: {selected_obj_id}", (p1[0], p1[1] - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
+        cv2.putText(final_frame, f"SELECT ID: {selected_obj_id}", (p1[0], p1[1] - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
 
-    if selected_obj_id is not None and not is_cv_tracking and isinstance(selected_obj_id, int):
-        for box in last_known_boxes:
-            if box.id is not None and int(box.id.item()) == selected_obj_id:
-                x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
-                draw_dashed_rectangle(final_frame, (x1, y1 + UI_HEIGHT), (x2, y2 + UI_HEIGHT), (0, 255, 255), 2)
-                break
     cv2.imshow(main_window_name, final_frame)
     if cv2.waitKey(1) & 0xFF == ord('q'): break
 
