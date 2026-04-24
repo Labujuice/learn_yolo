@@ -629,7 +629,15 @@ while True:
 
     final_frame = np.vstack((ui_panel, annotated_frame))
 
-    # Selection Highlight
+    # --- 5. Draw manual drawing preview rectangle ---
+    if is_drawing and drawing_start and drawing_current:
+        # Note: mouse coordinates are already relative to frame in callback (after UI_HEIGHT subtraction)
+        # So we add UI_HEIGHT back for drawing on final_frame
+        p1 = (drawing_start[0], drawing_start[1] + UI_HEIGHT)
+        p2 = (drawing_current[0], drawing_current[1] + UI_HEIGHT)
+        cv2.rectangle(final_frame, p1, p2, (0, 255, 255), 2) # Yellow preview box
+
+    # Selection Highlight (Legacy/Manual Selection)
     if tracker_bbox is not None:
         p1 = (int(tracker_bbox[0]), int(tracker_bbox[1]) + UI_HEIGHT)
         p2 = (int(tracker_bbox[0] + tracker_bbox[2]), int(tracker_bbox[1] + tracker_bbox[3]) + UI_HEIGHT)
