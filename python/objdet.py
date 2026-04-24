@@ -561,9 +561,9 @@ while True:
                         cls_id = int(box.cls.item()) if hasattr(box, 'cls') else -1
                         obj_name = names[cls_id] if cls_id in names else f"ID{obj_id}"
                         
-                        # Initialize or Re-sync Feature Tracker ONLY if BG tracking is enabled
+                        # Initialize or Re-sync Feature Tracker if BG tracking is enabled OR if it is the selected object
                         tracker_to_save = None
-                        if use_bg_tracking:
+                        if use_bg_tracking or obj_id == selected_obj_id:
                             if obj_id not in object_dict or object_dict[obj_id].get('tracker') is None:
                                 new_tracker = create_cv_tracker()
                                 if new_tracker:
