@@ -84,6 +84,12 @@ is_cv_tracking = False
 CV_TRACKER_TYPE = 'NANOTRACK' # Options: 'DASIAMRPN', 'NANOTRACK', 'CSRT', 'KCF', 'MIL'
 use_bg_tracking = True # Toggle for integrated tracking on background objects
 
+SMOOTH_ALPHA = 0.05  # 平滑係數 (0.0~1.0)，越小越平滑
+
+def smooth_bbox(old_bbox, new_bbox):
+    if old_bbox is None: return new_bbox
+    return tuple(SMOOTH_ALPHA * np.array(new_bbox) + (1 - SMOOTH_ALPHA) * np.array(old_bbox))
+
 def get_color(idx):
     """Returns a consistent color for a given ID."""
     colors = [
@@ -503,7 +509,7 @@ while True:
         if info.get('tracker') is not None and info.get('visible', False):
             ok, bbox = info['tracker'].update(frame)
             if ok:
-                info['bbox'] = bbox
+                info['bbox'] = smooth_bbox(info['bbox'], bbox) # 應用平滑化
                 tracking_performed = True
 
     # B. 背景物件追蹤 (依據設定頻率執行)
@@ -513,7 +519,7 @@ while True:
             if info.get('tracker') is not None and info.get('visible', False):
                 ok, bbox = info['tracker'].update(frame)
                 if ok:
-                    info['bbox'] = bbox
+                    info['bbox'] = smooth_bbox(info['bbox'], bbox) # 應用平滑化
                     tracking_performed = True
         last_track_time = now
 
@@ -521,7 +527,7 @@ while True:
     if selected_obj_id == 'Manual' and is_cv_tracking and cv_tracker:
         ok, bbox = cv_tracker.update(frame)
         if ok:
-            last_tracker_bbox = bbox
+            last_tracker_bbox = smooth_bbox(last_tracker_bbox, bbox) # 應用平滑化
             tracking_performed = True
         else:
             stop_cv_tracking()
