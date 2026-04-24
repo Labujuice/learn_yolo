@@ -298,6 +298,9 @@ def select_object_callback(event, x, y, flags, param):
                             CV_TRACKER_TYPE = tracker_name
                             tracking_request = {'action': 'stop'}
                             selected_obj_id = None
+                            # 聯動邏輯：切換模型時清除所有現有追蹤器，強制下一個週期重新建立
+                            for info in object_dict.values():
+                                info['tracker'] = None
                             break
             return
         
