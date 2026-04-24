@@ -475,7 +475,15 @@ while True:
     # --- 1. Global Tracking Request Handling (Mouse) ---
     if tracking_request:
         if tracking_request['action'] == 'start':
-            start_cv_tracking(frame, tracking_request['id'])
+            # YOLO ID Selection: Only ensure the internal tracker is ready
+            tid = tracking_request['id']
+            if tid in object_dict and object_dict[tid]['tracker'] is None:
+                object_dict[tid]['tracker'] = create_cv_tracker()
+                if object_dict[tid]['tracker']:
+                    object_dict[tid]['tracker'].init(frame, object_dict[tid]['bbox'])
+            # Ensure global tracker is OFF for YOLO objects to avoid double boxes
+            is_cv_tracking = False
+            cv_tracker = None
             last_tracker_bbox = None
         elif tracking_request['action'] == 'start_manual':
             start_manual_cv_tracking(frame, tracking_request['bbox'])
@@ -485,33 +493,44 @@ while True:
             last_tracker_bbox = None
         tracking_request = None
 
-    # --- 2. Feature Tracking for ALL objects (Multi-Object) ---
+    # --- 2. Feature Tracking Loop ---
+    t_track_start = time.time()
+    tracking_performed = False
+
+    # A. 優先更新選中物件 (每一幀都更新，不限頻率以保證流暢)
+    if isinstance(selected_obj_id, int) and selected_obj_id in object_dict:
+        info = object_dict[selected_obj_id]
+        if info.get('tracker') is not None and info.get('visible', False):
+            ok, bbox = info['tracker'].update(frame)
+            if ok:
+                info['bbox'] = bbox
+                tracking_performed = True
+
+    # B. 背景物件追蹤 (依據設定頻率執行)
     if track_interval == 0.0 or (now - last_track_time) >= track_interval:
-        t_track_start = time.time()
-        
-        # Update each object's tracker in the background dictionary
         for obj_id, info in object_dict.items():
+            if obj_id == selected_obj_id: continue # 已在上方處理
             if info.get('tracker') is not None and info.get('visible', False):
                 ok, bbox = info['tracker'].update(frame)
                 if ok:
                     info['bbox'] = bbox
-                else:
-                    # Tracker failed, wait for next YOLO detection to re-init
-                    pass
+                    tracking_performed = True
+        last_track_time = now
 
-        # Also update the selected tracker if in Manual or specific ID mode
-        if is_cv_tracking and cv_tracker is not None:
-            ok, bbox = cv_tracker.update(frame)
-            if ok:
-                last_tracker_bbox = bbox
-            else:
-                stop_cv_tracking()
-                last_tracker_bbox = None
+    # C. 手動模式追蹤 (每一幀更新)
+    if selected_obj_id == 'Manual' and is_cv_tracking and cv_tracker:
+        ok, bbox = cv_tracker.update(frame)
+        if ok:
+            last_tracker_bbox = bbox
+            tracking_performed = True
+        else:
+            stop_cv_tracking()
+            last_tracker_bbox = None
 
+    if tracking_performed:
         track_calc_time = (time.time() - t_track_start) * 1000
         track_actual_fps = 1.0 / (now - last_track_exec_time) if (now - last_track_exec_time) > 0 else 0
         last_track_exec_time = now
-        last_track_time = now
 
     tracker_bbox = last_tracker_bbox
 
