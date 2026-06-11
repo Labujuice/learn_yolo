@@ -208,7 +208,7 @@ if req_w and req_h and req_fps:
     cap.set(cv2.CAP_PROP_FPS, req_fps)
 
 if not cap.isOpened():
-    print(f"Error: Unable to open camera source {args.source}")
+    print(f"Error: Unable to open source: {args.source}")
     exit()
 
 source_fps = cap.get(cv2.CAP_PROP_FPS)
@@ -223,7 +223,8 @@ track_interval = 1.0 / track_freq if args.track_freq > 0 else 0.0
 
 actual_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
 actual_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-print(f"Camera connected successfully at {actual_w}x{actual_h}.")
+source_type = "Camera" if is_camera else "Video file"
+print(f"{source_type} opened successfully at {actual_w}x{actual_h}.")
 print(f"Source FPS: {source_fps:.2f}, Detection Freq: {'No limit' if args.det_freq == 0 else f'{det_freq:.2f} Hz'}, Tracking Freq: {'No limit' if args.track_freq == 0 else f'{track_freq:.2f} Hz'}")
 
 # --- OpenCV Tracker Management ---
@@ -384,7 +385,7 @@ cv2.namedWindow(objects_window_name)
 cv2.setMouseCallback(main_window_name, select_object_callback, param={'name': main_window_name})
 cv2.setMouseCallback(objects_window_name, select_object_callback, param={'name': objects_window_name})
 
-print(f"Camera {args.source} connected successfully. Using model: {MODEL_NAME}. Press 'q' to exit.")
+print(f"{source_type} {args.source} opened successfully. Using model: {MODEL_NAME}. Press 'q' to exit.")
 
 MAX_OBJECTS = OBJECTS_PER_ROW * 8
 object_slots = [None] * MAX_OBJECTS
@@ -474,7 +475,24 @@ last_tracker_bbox = None
 
 while True:
     ret, frame = cap.read()
-    if not ret: break
+    if not ret:
+        if not is_camera:
+            print("Video reached the end. Looping from the beginning...")
+            cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+            ret, frame = cap.read()
+            if not ret:
+                break
+            # Reset tracking dictionaries/states so they don't carry over from the end of the video
+            object_dict.clear()
+            for idx in range(len(object_slots)):
+                object_slots[idx] = None
+            cv_tracker = None
+            is_cv_tracking = False
+            selected_obj_id = None
+            last_tracker_bbox = None
+            last_known_boxes = []
+        else:
+            break
 
     now = time.time()
 
@@ -687,7 +705,19 @@ while True:
         cv2.putText(final_frame, f"SELECT: {selected_obj_id}", (p1[0], p1[1] - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
 
     cv2.imshow(main_window_name, final_frame)
-    if cv2.waitKey(1) & 0xFF == ord('q'): break
+    
+    # Calculate wait time to match video source FPS
+    if not is_camera:
+        elapsed_time = time.time() - now
+        target_delay = 1.0 / source_fps
+        wait_time_ms = int((target_delay - elapsed_time) * 1000)
+        if wait_time_ms < 1:
+            wait_time_ms = 1
+    else:
+        wait_time_ms = 1
+
+    if cv2.waitKey(wait_time_ms) & 0xFF == ord('q'):
+        break
 
 cap.release()
 cv2.destroyAllWindows()
